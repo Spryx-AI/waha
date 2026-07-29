@@ -4625,11 +4625,11 @@ __metadata:
   linkType: hard
 
 "@wppconnect-team/wppconnect@github:wppconnect-team/wppconnect#master":
-  version: 2.2.3
-  resolution: "@wppconnect-team/wppconnect@https://github.com/wppconnect-team/wppconnect.git#commit=b467df8a5e0b00bbd794b5afc40c7fb1836e70a0"
+  version: 2.2.4
+  resolution: "@wppconnect-team/wppconnect@https://github.com/wppconnect-team/wppconnect.git#commit=a27f6db8489d2a8da5b3d976506f29e8d8685b09"
   dependencies:
     "@img/sharp-win32-x64": "npm:^0.35.3"
-    "@wppconnect/wa-js": "npm:^4.4.1"
+    "@wppconnect/wa-js": "npm:^4.4.2"
     "@wppconnect/wa-version": "npm:^1.5.3941"
     atob: "npm:^2.1.2"
     axios: "npm:^1.18.1"
@@ -4664,7 +4664,7 @@ __metadata:
       optional: true
     fsevents:
       optional: true
-  checksum: 10/73baacfc22b9cbc40cbec4d010591b6614e28e7e5d95be0d8cbd378d8160f886cd2683c12a0ad8bbe8e073d8bbbc5d0cb785e316320e60e6e0178c36af779a99
+  checksum: 10/05db0d092e124dd08df2c68f02dffcd580204fb485485a7ba4baa6399ca928f5305b50744385f4a3ad3741275bc11bda489126550c190140eb98abab9b4a614c
   languageName: node
   linkType: hard
 
@@ -4675,10 +4675,10 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@wppconnect/wa-js@npm:^4.4.1":
-  version: 4.4.1
-  resolution: "@wppconnect/wa-js@npm:4.4.1"
-  checksum: 10/8c6a370cfa6d4ec516664b71fd1b0e4300f3dc28433925cace8df7954c6b1781913c9993d573cb39cb78d363b3edf2f4d23255655d4cdd053296ffe4534c1170
+"@wppconnect/wa-js@npm:^4.4.2":
+  version: 4.4.2
+  resolution: "@wppconnect/wa-js@npm:4.4.2"
+  checksum: 10/3281bcd4dca694a04814ef3d95db2930669f3f742ee964bad9303c0eace2d5ea8861241e3999ec9f96932b2541a5137fcea6d0ec15c4b2b61f7481015a108619
   languageName: node
   linkType: hard
 
