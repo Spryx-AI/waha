@@ -106,8 +106,7 @@ class SessionsController {
     description:
       'Fetch a fresh new-chat message capping (quota) state from WhatsApp. ' +
       'The same value is also available under me.messageCapping in the session ' +
-      'info, and changes are pushed through the session.status event. ' +
-      'GOWS engine only.',
+      'info, and changes are pushed through the session.status event.',
   })
   @CheckPolicies(CanSession(Action.Read, FromParam('session')))
   fetchMessageCapping(

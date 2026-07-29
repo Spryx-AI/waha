@@ -175,8 +175,7 @@ export class SessionTools extends McpController {
   @Tool('sessions-capping', {
     title: 'Get message capping',
     description:
-      'Fetch the account new-chat message capping (per-cycle quota). ' +
-      'GOWS engine only.',
+      'Fetch the account new-chat message capping (per-cycle quota).',
     inputSchema: SessionNameInput,
     annotations: {
       readOnlyHint: true,

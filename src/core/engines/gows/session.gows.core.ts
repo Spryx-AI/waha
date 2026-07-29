@@ -28,7 +28,7 @@ import {
   parseJsonList,
   statusToAck,
 } from '@waha/core/engines/gows/helpers';
-import { parseGowsMessageCapping } from '@waha/core/engines/gows/capping';
+import { parseMessageCapping } from '@waha/core/abc/capping';
 import { parseGowsReachoutTimelock } from '@waha/core/engines/gows/reachouttimelock';
 import { GowsAuthFactoryCore } from '@waha/core/engines/gows/store/GowsAuthFactoryCore';
 import {
@@ -483,7 +483,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       this.reachoutTimelock.update(parseGowsReachoutTimelock(data));
     });
     events.on(WhatsMeowEvent.MESSAGE_CAPPING, (data) => {
-      this.messageCapping.update(parseGowsMessageCapping(data));
+      this.messageCapping.update(parseMessageCapping(data));
     });
     events.on(WhatsMeowEvent.PRESENCE, (event: gows.Presence) => {
       if (isJidGroup(event.From)) {
@@ -2290,7 +2290,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     const response = await promisify(this.client.FetchMessageCapping)(
       this.session,
     );
-    const capping = parseGowsMessageCapping(parseJson(response));
+    const capping = parseMessageCapping(parseJson(response));
     // Keep the tracker in sync so MeInfo and 'session.status' reflect the fetch
     this.messageCapping.update(capping);
     return capping;

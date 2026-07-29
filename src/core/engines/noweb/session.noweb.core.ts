@@ -44,6 +44,7 @@ import type {
 import { ILogger } from '@adiwajshing/baileys/lib/Utils/logger';
 import { isLidUser } from '@adiwajshing/baileys/lib/WABinary/jid-utils';
 import { UnprocessableEntityException } from '@nestjs/common';
+import { parseMessageCapping } from '@waha/core/abc/capping';
 import {
   getChannelInviteLink,
   getPublicUrlFromDirectPath,
@@ -175,6 +176,7 @@ import {
 import { WAMessage, WAMessageReaction } from '@waha/structures/responses.dto';
 import {
   MeInfo,
+  MessageCappingData,
   ReachoutTimelockEnforcementType,
 } from '@waha/structures/sessions.dto';
 import { EnsureSeconds } from '@waha/utils/timehelper';
@@ -562,6 +564,9 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
 
   protected listenConnectionEvents() {
     this.logger.debug(`Start listening ${BaileysEvents.CONNECTION_UPDATE}...`);
+    this.sock.ev.on('message-capping.update', (data) => {
+      this.messageCapping.update(parseMessageCapping(data));
+    });
     this.sock.ev.on('connection.update', async (update) => {
       const { connection, lastDisconnect, qr, isNewLogin } = update;
       if (update.reachoutTimeLock) {
@@ -590,6 +595,15 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
         this.sock?.fetchAccountReachoutTimelock?.().catch((error) => {
           this.logger.warn(`Failed to fetch reachout timelock: ${error}`);
         });
+        // Same for the new-chat message capping - there is no push on (re)connect, only on changes
+        this.sock
+          ?.fetchNewChatMessageCap?.()
+          .then((data) => {
+            this.messageCapping.update(parseMessageCapping(data));
+          })
+          .catch((error) => {
+            this.logger.warn(`Failed to fetch message capping: ${error}`);
+          });
         // Do we need to resubscribe?
         // Ideally not, we need to explicitly call interesting
         // jids every 1 minute
@@ -893,6 +907,7 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
       pushName: me.name,
       lid: jidNormalizedUser(me.lid),
       reachoutTimelock: this.reachoutTimelock.value,
+      messageCapping: this.messageCapping.value,
     };
   }
 
@@ -981,6 +996,15 @@ export class WhatsappSessionNoWebCore extends WhatsappSession {
     const me = this.getSessionMeInfo();
     await this.sock.removeProfilePicture(me.id);
     return true;
+  }
+
+  @Activity()
+  public async fetchMessageCapping(): Promise<MessageCappingData> {
+    const data = await this.sock.fetchNewChatMessageCap();
+    const capping = parseMessageCapping(data);
+    // Keep the tracker in sync so MeInfo and 'session.status' reflect the fetch
+    this.messageCapping.update(capping);
+    return capping;
   }
 
   /**

@@ -13,17 +13,18 @@ function parseCappingTimestamp(value: any): number | null {
 }
 
 /**
- * Normalize gows' MessageCapping payload (xwa2_message_capping_info).
+ * Normalize the message capping payload (xwa2_message_capping_info) - the shape is the same
+ * across engines: GOWS gRPC event, NOWEB Baileys fetch/push, WEBJS injected fetch/local read.
  */
-export function parseGowsMessageCapping(data: any): MessageCappingData {
+export function parseMessageCapping(data: any): MessageCappingData {
   const cappingStatus = (data?.capping_status ??
     MessageCappingStatus.NONE) as MessageCappingStatus;
   return {
     cappingStatus: cappingStatus,
-    // total/used quota are Go ints, so numbers here; -1 total means "no cap"
+    // -1 total means "no cap"
     totalQuota: typeof data?.total_quota === 'number' ? data.total_quota : -1,
     usedQuota: typeof data?.used_quota === 'number' ? data.used_quota : 0,
-    // cycle timestamps are unix seconds strings, absent when zero (Go's omitzero)
+    // cycle timestamps are unix seconds strings (or ms numbers from WEBJS local reads)
     cycleStart: parseCappingTimestamp(data?.cycle_start_timestamp),
     cycleEnd: parseCappingTimestamp(data?.cycle_end_timestamp),
     mvStatus: data?.mv_status ?? null,
