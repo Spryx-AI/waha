@@ -1032,6 +1032,10 @@ export class WhatsappSessionWebJSCore extends WhatsappSession {
     const extra: any = {
       type: 'buttons_response',
       kind: 'buttonsResponse',
+      // WAWebGenerateButtonsResponseMessageProto reads the top-level field; nested buttonsResponse is legacy-gated
+      // behind the "wa_web_buttons_response_prop_removal_killswitch" ABProp (default off).
+      // Keep both like the native WAWebSendButtonsMsgReplyChatAction does
+      selectedButtonId: request.selectedButtonID,
       buttonsResponse: {
         selectedButtonId: request.selectedButtonID,
         selectedDisplayText: request.selectedDisplayText,
