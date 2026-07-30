@@ -11,6 +11,7 @@ import {
 } from '@waha/apps/app_sdk/services/IAppsService';
 import { EngineBootstrap } from '@waha/core/abc/EngineBootstrap';
 import { GowsEngineConfigService } from '@waha/core/config/GowsEngineConfigService';
+import { GowsRuntimeState } from '@waha/core/engines/gows/GowsRuntimeState';
 import { NowebEngineConfigService } from '@waha/core/config/NowebEngineConfigService';
 import { WPPEngineConfigService } from '@waha/core/config/WPPEngineConfigService';
 import { WebJSEngineConfigService } from '@waha/core/config/WebJSEngineConfigService';
@@ -20,6 +21,18 @@ import { WhatsappSessionWPPCore } from '@waha/core/engines/wpp/session.wpp.core'
 import { WhatsappSessionWebJSCore } from '@waha/core/engines/webjs/session.webjs.core';
 import { getProxyConfig } from '@waha/core/helpers.proxy';
 import { WebhookConductor } from '@waha/core/integrations/webhooks/WebhookConductor';
+import {
+  WebhookOutbox,
+  WebhookOutboxSnapshot,
+} from '@waha/core/integrations/webhooks/WebhookOutbox';
+import {
+  migrateWebhookOutbox,
+  WebhookOutboxRepository,
+} from '@waha/core/integrations/webhooks/WebhookOutboxRepository';
+import {
+  buildWebhookTarget,
+  WebhookTarget,
+} from '@waha/core/integrations/webhooks/WebhookTarget';
 import { MediaManager } from '@waha/core/media/MediaManager';
 import { MediaStorageFactory } from '@waha/core/media/MediaStorageFactory';
 import { LocalSessionAuthRepository } from '@waha/core/storage/LocalSessionAuthRepository';
@@ -68,7 +81,6 @@ import {
   SessionDTO,
   SessionInfo,
 } from '../structures/sessions.dto';
-import { WebhookConfig } from '../structures/webhooks.config.dto';
 import { populateSessionInfo, SessionManager } from './abc/manager.abc';
 import { SessionParams, WhatsappSession } from './abc/session.abc';
 import { EngineConfigService } from './config/EngineConfigService';
@@ -76,16 +88,15 @@ import { EngineConfigService } from './config/EngineConfigService';
 const ALL = '*';
 
 @Injectable()
-export class SessionManagerCore
-  extends SessionManager
-  implements OnModuleInit, OnApplicationBootstrap
-{
+export class SessionManagerCore extends SessionManager
+  implements OnModuleInit, OnApplicationBootstrap {
   private SESSION_STOP_TIMEOUT = 3000;
   SESSION_UNPAIR_TIMEOUT = 1000;
   private readonly sessions: Record<string, WhatsappSession>;
 
   protected readonly EngineClass: typeof WhatsappSession;
   protected readonly engineBootstrap: EngineBootstrap;
+  private webhookOutbox?: WebhookOutbox;
 
   protected events2: DefaultMap<
     string,
@@ -99,12 +110,13 @@ export class SessionManagerCore
     private wppEngineConfigService: WPPEngineConfigService,
     private nowebEngineConfigService: NowebEngineConfigService,
     gowsConfigService: GowsEngineConfigService,
+    gowsRuntime: GowsRuntimeState,
     log: PinoLogger,
     private mediaStorageFactory: MediaStorageFactory,
     @Inject(AppsService)
     appsService: IAppsService,
   ) {
-    super(log, config, gowsConfigService, appsService);
+    super(log, config, gowsConfigService, gowsRuntime, appsService);
     this.sessions = {};
     const engineName = this.engineConfigService.getDefaultEngineName();
     this.EngineClass = this.getEngine(engineName);
@@ -190,6 +202,7 @@ export class SessionManagerCore
     await this.sessionMeRepository.init();
     await this.sessionWorkerRepository.init();
     await this.apiKeyRepository.init();
+    await this.initializeWebhookOutbox();
     this.listenEvents();
     await this.clearStorage();
   }
@@ -275,6 +288,7 @@ export class SessionManagerCore
   }
 
   async beforeApplicationShutdown(signal?: string) {
+    this.webhookOutbox?.stop();
     this.log.info('Stopping all sessions...');
     const promises = Object.keys(this.sessions).map(async (sessionName) => {
       await this.withLock(sessionName, async () => {
@@ -348,7 +362,7 @@ export class SessionManagerCore
       this.config.mimetypes,
       loggerBuilder.child({ name: 'MediaManager' }),
     );
-    const webhook = new WebhookConductor(loggerBuilder);
+    const webhook = new WebhookConductor(loggerBuilder, this.webhookOutbox);
     const proxyConfig = this.getProxyConfig(name, config);
     const sessionConfig: SessionParams = {
       name,
@@ -359,13 +373,16 @@ export class SessionManagerCore
       proxyConfig: proxyConfig,
       sessionConfig: config,
       ignore: this.ignoreChatsConfig(config),
+      runtimeMetrics: this.gowsRuntime,
     };
     if (this.EngineClass === WhatsappSessionWebJSCore) {
       sessionConfig.engineConfig = this.webjsEngineConfigService.getConfig();
     } else if (this.EngineClass === WhatsappSessionWPPCore) {
       sessionConfig.engineConfig = this.wppEngineConfigService.getConfig();
     } else if (this.EngineClass === WhatsappSessionGoWSCore) {
-      sessionConfig.engineConfig = this.gowsConfigService.getConfig();
+      const engineConfig = this.gowsConfigService.getConfig();
+      engineConfig.runtime = this.gowsRuntime;
+      sessionConfig.engineConfig = engineConfig;
     } else if (this.EngineClass === WhatsappSessionNoWebCore) {
       sessionConfig.engineConfig = this.nowebEngineConfigService.getConfig();
     }
@@ -410,7 +427,10 @@ export class SessionManagerCore
         const stream$ = session
           .getEventObservable(event)
           .pipe(map(populateSessionInfo(event, session)), share());
-        this.events2.get(session.name).get(event).switch(stream$);
+        this.events2
+          .get(session.name)
+          .get(event)
+          .switch(stream$);
         streams.push(stream$);
       }
       this.events2
@@ -473,16 +493,46 @@ export class SessionManagerCore
   /**
    * Combine per session and global webhooks
    */
-  private getWebhooks(config: SessionConfig) {
-    let webhooks: WebhookConfig[] = [];
-    if (config?.webhooks) {
-      webhooks = webhooks.concat(config.webhooks);
+  private getWebhooks(config: SessionConfig): WebhookTarget[] {
+    const webhooks: WebhookTarget[] = [];
+    for (const [position, webhook] of (config?.webhooks ?? []).entries()) {
+      webhooks.push(buildWebhookTarget('session', position, webhook));
     }
     const globalWebhookConfig = this.config.getWebhookConfig();
     if (globalWebhookConfig) {
-      webhooks.push(globalWebhookConfig);
+      webhooks.push(buildWebhookTarget('global', 0, globalWebhookConfig));
     }
     return webhooks;
+  }
+
+  private async initializeWebhookOutbox(): Promise<void> {
+    if (!this.config.webhookOutboxEnabled) {
+      this.log.info('Durable webhook outbox is disabled.');
+      return;
+    }
+    if (this.store instanceof MongoStore) {
+      throw new Error(
+        'WAHA_WEBHOOK_OUTBOX_ENABLED requires PostgreSQL or local SQLite storage.',
+      );
+    }
+    const knex = this.store.getWAHADatabase();
+    await migrateWebhookOutbox(knex);
+    const repository = new WebhookOutboxRepository(knex);
+    const workerId = this.workerId || process.env.HOSTNAME || 'waha-local';
+    this.webhookOutbox = new WebhookOutbox(
+      repository,
+      this.log.logger,
+      { workerId: workerId },
+    );
+    this.webhookOutbox.start();
+    this.log.info(
+      { workerId: workerId },
+      'Durable webhook outbox is enabled.',
+    );
+  }
+
+  public async getWebhookOutboxSnapshot(): Promise<WebhookOutboxSnapshot | null> {
+    return this.webhookOutbox?.snapshot() ?? null;
   }
 
   /**
@@ -535,6 +585,10 @@ export class SessionManagerCore
     return sessions;
   }
 
+  getRuntimeSessionsCount(): number {
+    return Object.keys(this.sessions).length;
+  }
+
   /**
    * Get all sessions
    * Even tho it's "offline", it usually contains both offline and online sessions
@@ -546,8 +600,9 @@ export class SessionManagerCore
     if (name) {
       names = names.filter((n) => n === name);
     }
-    const configBySession =
-      await this.sessionConfigRepository.getConfigBySessions(names);
+    const configBySession = await this.sessionConfigRepository.getConfigBySessions(
+      names,
+    );
     const meBySession = await this.sessionMeRepository.getMeBySessions(names);
     const sessions = names.map((sessionName) => {
       const status = WAHASessionStatus.STOPPED;

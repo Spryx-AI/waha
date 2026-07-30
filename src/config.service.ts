@@ -124,6 +124,12 @@ export class WhatsappConfigService implements OnApplicationBootstrap {
     return this.webhookConfig.config;
   }
 
+  get webhookOutboxEnabled(): boolean {
+    return parseBool(
+      this.configService.get('WAHA_WEBHOOK_OUTBOX_ENABLED', 'false'),
+    );
+  }
+
   getSessionMongoUrl(): string | undefined {
     return this.configService.get('WHATSAPP_SESSIONS_MONGO_URL', undefined);
   }

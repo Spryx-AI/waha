@@ -3,26 +3,22 @@
 This guide summarizes how to explore, modify, and validate the WhatsApp HTTP API
 (WAHA) codebase when assisting as an automation or coding agent.
 
-## Product & Variants
+## Product
 
-- WAHA ships in **Core** and **Plus** editions
-- Core lives under `src/core` and supports the default session with minimal
-  media features
-- Plus extends core via `src/plus` to add multi-session orchestration, richer
-  media handling, and external storage integrations
-- Core code must remain free from Plus-only references (pre-commit hook rejects
-  "plus" in core files)
-- Commit subjects: changes that touch `src/plus` require `[PLUS] …` prefix;
-  everything else uses `[core] …`
+- This fork builds the Apache-2.0-licensed WAHA Core source in this repository.
+- The Core runtime supports multiple named sessions and the GOWS engine without
+  private registry credentials or a Patreon/Plus license.
+- `src/main.ts` retains upstream compatibility with an optional Plus module,
+  but this repository does not contain `src/plus`.
+- Keep changes compatible with the public Core build.
 
 ## Tech Stack
 
-- **Runtime**: Node.js 22.x, Yarn 3.6 (Berry)
+- **Runtime**: Node.js 24.x, Yarn 4.17 (Berry)
 - **Framework**: NestJS v11 with dependency injection and modular controllers in
   `src/api`
 - **Engines**: WhatsApp engines are abstracted (`WEBJS`, `GOWS`, `NOWEB`,
-  `WPP`). Core uses `SessionManagerCore`; Plus swaps to `SessionManagerPlus`
-  with extra storage backends (Mongo/Postgres/SQLite)
+  `WPP`) and Core uses `SessionManagerCore`
 - **ESM Bridge**: ESM-only dependencies (Baileys) load through
   `src/vendor/esm.ts`
 - **Utilities**: RxJS streams drive webhook event fan-out. Prefer existing
@@ -30,12 +26,10 @@ This guide summarizes how to explore, modify, and validate the WhatsApp HTTP API
 
 ## Key Paths
 
-- `src/main.ts`: runtime entry point; dynamically loads AppModule (Core vs Plus)
+- `src/main.ts`: runtime entry point; loads the Core app module in this fork
 - `src/api/**`: REST controllers and WebSocket gateway
 - `src/core/**`: shared abstractions (config services, engine bootstrap,
   storage, session management)
-- `src/plus/**`: multi-session orchestration, advanced media services, and
-  external persistence layers
 - `src/structures/**` and `src/utils/**`: DTOs, enums (event names follow
   `domain.action`), helper utilities
 

@@ -106,6 +106,9 @@ ENV PUPPETEER_SKIP_DOWNLOAD=True
 ENV NODE_OPTIONS="--max-old-space-size=16384"
 ARG USE_BROWSER=chromium
 ARG WHATSAPP_DEFAULT_ENGINE
+ARG WAHA_BUILD_REVISION=unknown
+ARG WAHA_BUILD_VERSION=unknown
+ARG WAHA_IMAGE_SOURCE=https://github.com/Spryx-AI/waha
 
 RUN echo "USE_BROWSER=$USE_BROWSER"
 
@@ -248,6 +251,15 @@ ENV WAHA_ZIPPER=ZIPUNZIP
 
 # GOWS - use libc DNS resolver
 ENV GODEBUG=netdns=cgo
+
+# Keep release metadata after the expensive runtime layers so rebuilding a new
+# immutable revision can reuse the package and application caches.
+ENV WAHA_BUILD_REVISION=$WAHA_BUILD_REVISION
+ENV WAHA_BUILD_VERSION=$WAHA_BUILD_VERSION
+ENV WAHA_IMAGE_SOURCE=$WAHA_IMAGE_SOURCE
+LABEL org.opencontainers.image.source=$WAHA_IMAGE_SOURCE
+LABEL org.opencontainers.image.revision=$WAHA_BUILD_REVISION
+LABEL org.opencontainers.image.version=$WAHA_BUILD_VERSION
 
 # Run command, etc
 EXPOSE 3000

@@ -53,15 +53,6 @@ Assuming you have installed [Docker](https://docs.docker.com/get-docker/), let's
 docker pull devlikeapro/waha
 ```
 
-
-```bash
-docker login -u devlikeapro -p {KEY}
-docker pull devlikeapro/waha-plus
-docker logout
-```
-
-Read more about how to get `PASSWORD` for [**➕ WAHA Plus**](https://waha.devlike.pro/docs/how-to/waha-plus/)
-
 ### 2. Run WhatsApp HTTP API
 
 Run WhatsApp HTTP API:
@@ -98,7 +89,8 @@ The example payload:
 ```
 
 
-By using the request with `name` values you can start multiple session (WhatsApp accounts) inside the single docker container in Plus
+Use distinct `name` values to start multiple sessions (WhatsApp accounts) in a
+single container.
 
 
 ### 4. Get and scan QR
@@ -144,9 +136,17 @@ curl -d "{\"chatId\": \"${PHONE}@c.us\", \"text\": \"Hello from WhatsApp HTTP AP
 
 # Development
 
+Spryx image build, publication, and validation instructions are documented in
+[docs/spryx-gows-image.md](docs/spryx-gows-image.md).
+The credential-free and paired release gates are documented in
+[docs/spryx-gows-compatibility.md](docs/spryx-gows-compatibility.md).
+For a turnkey local build, QR pairing, paired canary, restart proof, and safe
+teardown, follow
+[docs/spryx-gows-local-pairing.md](docs/spryx-gows-local-pairing.md).
+
 ## Start the project
 1. Clone the repository
-2. Make sure you're using node>=22 (check [.nvmrc](/.nvmrc) to get the version)
+2. Use the Node.js version in [.nvmrc](/.nvmrc) (currently Node.js 24)
 3. Install the **whatsapp-rust-bridge prerequisites**:
  ```bash
 # Bun runtime used by whatsapp-rust-bridge prepare scripts

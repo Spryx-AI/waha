@@ -17,4 +17,6 @@ export abstract class WAHAHealthCheckService {
   }
 
   abstract check(): Promise<HealthCheckResult>;
+
+  abstract readiness(): Promise<HealthCheckResult>;
 }

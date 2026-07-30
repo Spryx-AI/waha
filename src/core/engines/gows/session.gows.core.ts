@@ -14,6 +14,7 @@ import {
 import { Jid } from '@waha/core/engines/const';
 import { EventsFromObservable } from '@waha/core/engines/gows/EventsFromObservable';
 import { GowsEventStreamObservable } from '@waha/core/engines/gows/GowsEventStreamObservable';
+import { GowsRuntimeState } from '@waha/core/engines/gows/GowsRuntimeState';
 import {
   ToGroupParticipants,
   ToGroupV2JoinEvent,
@@ -264,6 +265,7 @@ enum WhatsMeowEvent {
 
 export interface GowsConfig {
   connection: string;
+  runtime?: GowsRuntimeState;
 }
 
 export class WhatsappSessionGoWSCore extends WhatsappSession {
@@ -375,6 +377,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
         const stream = client.StreamEvents(request);
         return { client, stream };
       },
+      this.engineConfig.runtime?.eventStreamLifecycle(this.name),
     );
 
     // Retry on error with delay
@@ -390,6 +393,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     this.events = new EventsFromObservable<WhatsMeowEvent>(this.all$);
     const events = this.events;
     events.on(WhatsMeowEvent.CONNECTED, (data) => {
+      this.engineConfig.runtime?.markSessionConnected(this.name, 'connected');
       this.status = WAHASessionStatus.WORKING;
       this.me = {
         id: toCusFormat(esm.b.jidNormalizedUser(data.ID)),
@@ -401,6 +405,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
     });
 
     events.on(WhatsMeowEvent.DISCONNECTED, () => {
+      this.engineConfig.runtime?.markSessionDisconnected(
+        this.name,
+        'disconnected',
+      );
       if (this.status != WAHASessionStatus.STARTING) {
         this.cleanupPresenceTimeout();
         this.presence = null;
@@ -408,6 +416,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       }
     });
     events.on(WhatsMeowEvent.KEEP_ALIVE_TIMEOUT, () => {
+      this.engineConfig.runtime?.markSessionDisconnected(
+        this.name,
+        'keepalive_timeout',
+      );
       if (this.status != WAHASessionStatus.STARTING) {
         this.cleanupPresenceTimeout();
         this.presence = null;
@@ -415,6 +427,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       }
     });
     events.on(WhatsMeowEvent.KEEP_ALIVE_RESTORED, () => {
+      this.engineConfig.runtime?.markKeepaliveRestored(this.name);
       if (this.status != WAHASessionStatus.WORKING) {
         this.status = WAHASessionStatus.WORKING;
       }
@@ -473,6 +486,10 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       this.me = { ...this.me, pushName: data.Action.name };
     });
     events.on(WhatsMeowEvent.LOGGED_OUT, () => {
+      this.engineConfig.runtime?.markSessionDisconnected(
+        this.name,
+        'logged_out',
+      );
       this.logger.error('Logged out');
       this.status = WAHASessionStatus.FAILED;
     });
@@ -597,38 +614,42 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
           msg?.Message?.protocolMessage?.key !== undefined
         );
       }),
-      mergeMap(async (message): Promise<WAMessageRevokedBody> => {
-        const afterMessage = await this.toWAMessage(message);
-        // Extract the revoked message ID from protocolMessage.key
-        const revokedMessageId = message.Message.protocolMessage.key?.ID;
-        return {
-          after: afterMessage,
-          before: null,
-          revokedMessageId: revokedMessageId,
-          _data: message,
-        };
-      }),
+      mergeMap(
+        async (message): Promise<WAMessageRevokedBody> => {
+          const afterMessage = await this.toWAMessage(message);
+          // Extract the revoked message ID from protocolMessage.key
+          const revokedMessageId = message.Message.protocolMessage.key?.ID;
+          return {
+            after: afterMessage,
+            before: null,
+            revokedMessageId: revokedMessageId,
+            _data: message,
+          };
+        },
+      ),
     );
     this.events2.get(WAHAEvents.MESSAGE_REVOKED).switch(messagesRevoked$);
 
     // Handle edited messages
     const messagesEdited$ = messages$.pipe(
       filter((message) => IsEditedMessage(message.Message)),
-      mergeMap(async (message): Promise<WAMessageEditedBody> => {
-        const waMessage = await this.toWAMessage(message);
-        const content = normalizeMessageContent(message.Message);
-        // Extract the body from editedMessage using extractBody function
-        const body = extractBody(content.protocolMessage.editedMessage) || '';
-        // Extract the original message ID from protocolMessage.key
-        // @ts-ignore
-        const editedMessageId = content.protocolMessage.key?.ID;
-        return {
-          ...waMessage,
-          body: body,
-          editedMessageId: editedMessageId,
-          _data: message,
-        };
-      }),
+      mergeMap(
+        async (message): Promise<WAMessageEditedBody> => {
+          const waMessage = await this.toWAMessage(message);
+          const content = normalizeMessageContent(message.Message);
+          // Extract the body from editedMessage using extractBody function
+          const body = extractBody(content.protocolMessage.editedMessage) || '';
+          // Extract the original message ID from protocolMessage.key
+          // @ts-ignore
+          const editedMessageId = content.protocolMessage.key?.ID;
+          return {
+            ...waMessage,
+            body: body,
+            editedMessageId: editedMessageId,
+            _data: message,
+          };
+        },
+      ),
     );
     this.events2.get(WAHAEvents.MESSAGE_EDITED).switch(messagesEdited$);
 
@@ -855,6 +876,7 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
   async stop(): Promise<void> {
     this.cleanupPresenceTimeout();
     this.status = WAHASessionStatus.STOPPED;
+    this.engineConfig.runtime?.removeSession(this.name);
     this.events?.stop();
     this.stopEvents();
     this.mediaManager.close();
