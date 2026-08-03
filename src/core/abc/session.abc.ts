@@ -141,6 +141,7 @@ import {
   PRESENCE_AUTO_ONLINE_DURATION_SECONDS,
 } from '@waha/core/env';
 import { Activity } from '@waha/core/abc/activity';
+import { GowsRuntimeState } from '@waha/core/engines/gows/GowsRuntimeState';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const qrcode = require('qrcode-terminal');
@@ -167,6 +168,7 @@ export interface SessionParams {
   engineConfig?: any;
   // Ignore settings
   ignore: IgnoreJidConfig;
+  runtimeMetrics?: GowsRuntimeState;
 }
 
 /**
@@ -193,6 +195,7 @@ export abstract class WhatsappSession {
   protected proxyConfig?: ProxyConfig;
   public sessionConfig?: SessionConfig;
   protected engineConfig?: any;
+  protected runtimeMetrics?: GowsRuntimeState;
   protected unpairing: boolean = false;
   protected jids: JidFilter;
 
@@ -236,6 +239,7 @@ export abstract class WhatsappSession {
     sessionConfig,
     engineConfig,
     ignore,
+    runtimeMetrics,
   }: SessionParams) {
     this._status = WAHASessionStatus.STOPPED;
     this.status$ = new Subject<SessionStatusUpdate>();
@@ -259,6 +263,7 @@ export abstract class WhatsappSession {
         new SwitchObservable((obs$) => {
           return obs$.pipe(
             catchError((err) => {
+              runtimeMetrics?.markSlowListenerEventDrop();
               this.logger.error(
                 `Caught error, dropping value from, event: '${key}'`,
               );
@@ -339,6 +344,7 @@ export abstract class WhatsappSession {
     this.mediaManager = mediaManager;
     this.sessionConfig = sessionConfig;
     this.engineConfig = engineConfig;
+    this.runtimeMetrics = runtimeMetrics;
     this.shouldPrintQR = printQR;
     this.logger.info(
       { ignore: ignore },
@@ -375,6 +381,9 @@ export abstract class WhatsappSession {
       status === WAHASessionStatus.FAILED
     ) {
       this.reachoutTimelock?.stop();
+    }
+    if (this._status !== status) {
+      this.runtimeMetrics?.markSessionStatusTransition();
     }
     this._status = status;
     this._statusData = data;

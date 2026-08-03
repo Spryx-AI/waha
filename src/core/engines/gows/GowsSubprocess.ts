@@ -1,6 +1,13 @@
+import {
+  GowsProcessExit,
+  GowsRuntimeContext,
+  GowsRuntimeState,
+} from '@waha/core/engines/gows/GowsRuntimeState';
 import { sleep, waitUntil } from '@waha/utils/promiseTimeout';
 import { spawn } from 'child_process';
 import { Logger } from 'pino';
+
+export type GowsRuntimeContextProvider = () => GowsRuntimeContext;
 
 export class GowsSubprocess {
   private checkIntervalMs: number = 100;
@@ -10,15 +17,19 @@ export class GowsSubprocess {
   private child: any;
   private ready: boolean = false;
   private stdoutBuffer: string = '';
+  private stopping: boolean = false;
+  private diagnosticEvidence: string[] = [];
 
   constructor(
     private logger: Logger,
     readonly path: string,
     readonly socket: string,
-    readonly pprof: boolean = false,
+    readonly pprof: boolean,
+    private runtime: GowsRuntimeState,
+    private context: GowsRuntimeContextProvider,
   ) {}
 
-  start(onExit: (code: number | null, signal: NodeJS.Signals | null) => void) {
+  start(onExit: (exit: GowsProcessExit) => void) {
     this.logger.info('Starting GOWS subprocess...');
     this.logger.debug(`GOWS path '${this.path}', socket: '${this.socket}'...`);
 
@@ -33,22 +44,49 @@ export class GowsSubprocess {
     this.child = spawn(this.path, args, {
       detached: true,
     });
+    this.runtime.markProcessStarting(this.child.pid ?? null);
     this.logger.debug(`GOWS started with PID: ${this.child.pid}`);
     this.child.on('close', (code, signal) => {
-      const msg =
-        code !== null
-          ? `GOWS subprocess closed with code ${code}`
-          : `GOWS subprocess closed by signal ${signal}`;
-      this.logger.debug(msg);
-      onExit(code, signal);
+      const exit = this.buildExit(code, signal);
+      this.runtime.markProcessExit(exit);
+      const context = this.context();
+      const evidence = {
+        event: 'gows.process.exit',
+        workerId: context.workerId,
+        activeSessions: context.activeSessions,
+        code: exit.code,
+        signal: exit.signal,
+        expected: exit.expected,
+        panicDetected: exit.panicDetected,
+        oomDetected: exit.oomDetected,
+        diagnosticEvidence: exit.diagnosticEvidence,
+      };
+      if (exit.expected) {
+        this.logger.info(evidence, 'GOWS subprocess stopped');
+      } else {
+        this.logger.error(evidence, 'GOWS subprocess exited unexpectedly');
+      }
+      onExit(exit);
     });
     this.child.on('error', (err) => {
-      this.logger.error(`GOWS subprocess error: ${err}`);
+      this.runtime.markProcessError(err);
+      const context = this.context();
+      this.logger.error(
+        {
+          event: 'gows.process.error',
+          workerId: context.workerId,
+          activeSessions: context.activeSessions,
+          err: err,
+        },
+        'GOWS subprocess error',
+      );
     });
 
     this.child.stderr?.setEncoding('utf8');
     this.child.stderr?.on('data', (data) => {
-      this.logger.error(data.toString().trim());
+      const text = data.toString().trim();
+      this.captureDiagnosticEvidence(text);
+      this.logger.error(text);
     });
 
     this.child.stdout?.setEncoding('utf8');
@@ -78,7 +116,17 @@ export class GowsSubprocess {
     }
     await sleep(this.readyDelayMs);
     this.ready = true;
-    this.logger.info('GOWS is ready');
+    this.runtime.markProcessReady();
+    const context = this.context();
+    this.logger.info(
+      {
+        event: 'gows.process.ready',
+        workerId: context.workerId,
+        activeSessions: context.activeSessions,
+        pid: this.child?.pid ?? null,
+      },
+      'GOWS is ready',
+    );
   }
 
   async waitWhenReady(timeout: number) {
@@ -96,8 +144,9 @@ export class GowsSubprocess {
 
   async stop() {
     this.logger.info('Stopping GOWS subprocess...');
+    this.stopping = true;
+    this.runtime.markProcessStopping();
     this.child?.kill('SIGTERM');
-    this.logger.info('GOWS subprocess stopped');
   }
 
   private log(msg) {
@@ -114,5 +163,34 @@ export class GowsSubprocess {
     } else {
       this.logger.info(msg);
     }
+  }
+
+  private captureDiagnosticEvidence(text: string): void {
+    const diagnosticPattern = /panic|fatal error|out of memory|\boom\b|cannot allocate memory/i;
+    const lines = text
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => diagnosticPattern.test(line))
+      .map((line) => line.slice(0, 512));
+    this.diagnosticEvidence.push(...lines);
+    this.diagnosticEvidence = this.diagnosticEvidence.slice(-5);
+  }
+
+  private buildExit(
+    code: number | null,
+    signal: NodeJS.Signals | null,
+  ): GowsProcessExit {
+    const evidence = [...this.diagnosticEvidence];
+    return {
+      code: code,
+      signal: signal,
+      timestamp: Date.now(),
+      expected: this.stopping,
+      panicDetected: evidence.some((line) => /panic|fatal error/i.test(line)),
+      oomDetected: evidence.some((line) =>
+        /out of memory|\boom\b|cannot allocate memory/i.test(line),
+      ),
+      diagnosticEvidence: evidence,
+    };
   }
 }

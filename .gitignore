@@ -11,6 +11,7 @@ sessions
 .secrets
 .minio
 .media
+.spryx-local
 tokens
 files
 venv

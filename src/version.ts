@@ -6,7 +6,10 @@ import {
   isChromeExecutablePath,
 } from './core/abc/session.browser';
 import { WAHAEngine } from './structures/enums.dto';
-import { WAHAEnvironment } from './structures/environment.dto';
+import {
+  WAHABuildEnvironment,
+  WAHAEnvironment,
+} from './structures/environment.dto';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const fs = require('fs');
@@ -36,6 +39,16 @@ export function getWorker() {
   return { id: process.env.WAHA_WORKER_ID || null };
 }
 
+export function getBuild(): WAHABuildEnvironment {
+  return {
+    revision: process.env.WAHA_BUILD_REVISION || null,
+    version: process.env.WAHA_BUILD_VERSION || null,
+    image: process.env.WAHA_IMAGE_REFERENCE || null,
+    digest: process.env.WAHA_IMAGE_DIGEST || null,
+    source: process.env.WAHA_IMAGE_SOURCE || null,
+  };
+}
+
 function getBrowser() {
   return getEngineName() === WAHAEngine.WEBJS ||
     getEngineName() === WAHAEngine.WPP
@@ -54,6 +67,7 @@ export const VERSION: WAHAEnvironment = {
   browser: getBrowser(),
   platform: getPlatform(),
   worker: getWorker(),
+  build: getBuild(),
 };
 
 export const IsChrome = VERSION.browser

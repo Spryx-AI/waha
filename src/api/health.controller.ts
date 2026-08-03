@@ -27,4 +27,15 @@ export class HealthController {
   async check() {
     return this.wahaHealth.check();
   }
+
+  @Get('ready')
+  @HealthCheck()
+  @ApiOperation({
+    summary: 'Check the readiness of the messaging runtime',
+    description:
+      'Report shared GOWS worker readiness and session-scoped event-stream evidence without sending a WhatsApp message.',
+  })
+  async readiness() {
+    return this.wahaHealth.readiness();
+  }
 }

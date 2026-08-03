@@ -4,7 +4,7 @@
   "description": "",
   "author": "",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "Apache-2.0",
   "scripts": {
     "prebuild": "rimraf dist",
     "build": "nest build",
@@ -26,7 +26,11 @@
     "test:all": "yarn test:unit && yarn test:e8e",
     "gows:proto:fetch": "node scripts/gows-proto.js fetch",
     "gows:proto:build": "node scripts/gows-proto.js build",
-    "gows:proto": "yarn gows:proto:fetch && yarn gows:proto:build"
+    "gows:proto": "yarn gows:proto:fetch && yarn gows:proto:build",
+    "compatibility:gows:offline": "scripts/spryx-compatibility-gows.sh",
+    "compatibility:gows:paired": "node scripts/spryx-paired-gows.mjs",
+    "local:gows": "scripts/spryx-local-gows.sh",
+    "webhooks:cleanup": "node dist/scripts/cleanup-webhook-targets.js"
   },
   "dependencies": {
     "@adiwajshing/baileys": "github:devlikeapro/Baileys#fork-master-2026-04-28",

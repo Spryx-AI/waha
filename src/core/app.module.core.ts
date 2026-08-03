@@ -30,7 +30,9 @@ import { MediaLocalStorageConfig } from '@waha/core/media/local/MediaLocalStorag
 import { MediaPsqlStorageModule } from '@waha/core/media/psql/media.psql.storage.module';
 import { MediaS3StorageModule } from '@waha/core/media/s3/media.s3.storage.module';
 import { CheckFreeDiskSpaceIndicator } from '@waha/core/health/CheckFreeDiskSpaceIndicator';
+import { GowsRuntimeHealthIndicator } from '@waha/core/health/GowsRuntimeHealthIndicator';
 import { MongoStoreHealthIndicator } from '@waha/core/health/MongoStoreHealthIndicator';
+import { GowsRuntimeState } from '@waha/core/engines/gows/GowsRuntimeState';
 import { ChannelsInfoServiceCore } from '@waha/core/services/ChannelsInfoServiceCore';
 import { parseBool } from '@waha/helpers';
 import { BufferJsonReplacerInterceptor } from '@waha/nestjs/BufferJsonReplacerInterceptor';
@@ -119,7 +121,9 @@ export const IMPORTS_CORE = [
   ConfigModule.forRoot({
     isGlobal: true,
     validationSchema: Joi.object({
-      WHATSAPP_API_SCHEMA: Joi.string().valid('http', 'https').default('http'),
+      WHATSAPP_API_SCHEMA: Joi.string()
+        .valid('http', 'https')
+        .default('http'),
     }),
   }),
   ServeStaticModule.forRootAsync({
@@ -213,6 +217,8 @@ export const PROVIDERS_BASE: Provider[] = [
   MediaLocalStorageConfig,
   MongoStoreHealthIndicator,
   CheckFreeDiskSpaceIndicator,
+  GowsRuntimeState,
+  GowsRuntimeHealthIndicator,
   WebSocketAuth,
   ApiKeyStrategy,
   ApiKeyAuthService,

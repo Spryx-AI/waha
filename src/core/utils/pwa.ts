@@ -2,17 +2,17 @@
  * Proto WhatsApp Utils
  */
 
-import { normalizeMessageContent, proto } from '@adiwajshing/baileys';
+import type { proto } from '@adiwajshing/baileys';
 import esm from '@waha/vendor/esm';
 
 export function IsEditedMessage(message: proto.IMessage): boolean {
-  message = normalizeMessageContent(message);
+  message = esm.b.normalizeMessageContent(message);
   if (!message) {
     return false;
   }
   if (
     message?.protocolMessage?.type !==
-    proto.Message.ProtocolMessage.Type.MESSAGE_EDIT
+    esm.b.proto.Message.ProtocolMessage.Type.MESSAGE_EDIT
   ) {
     return false;
   }
@@ -31,18 +31,18 @@ export function IsSecretEncryptedMessageEdit(
   }
   return (
     sem.secretEncType ===
-    proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT
+    esm.b.proto.Message.SecretEncryptedMessage.SecretEncType.MESSAGE_EDIT
   );
 }
 
 export function IsHistorySyncNotification(message: proto.IMessage): boolean {
-  message = normalizeMessageContent(message);
+  message = esm.b.normalizeMessageContent(message);
   if (!message) {
     return false;
   }
   if (
     message?.protocolMessage?.type !==
-    proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION
+    esm.b.proto.Message.ProtocolMessage.Type.HISTORY_SYNC_NOTIFICATION
   ) {
     return false;
   }

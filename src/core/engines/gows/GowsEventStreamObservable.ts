@@ -1,6 +1,7 @@
 import * as grpc from '@grpc/grpc-js';
 import { rand } from '@waha/core/auth/config';
 import { messages } from '@waha/core/engines/gows/grpc/gows';
+import { GowsEventStreamLifecycle } from '@waha/core/engines/gows/GowsRuntimeState';
 import { EnginePayload } from '@waha/structures/webhooks.dto';
 import { sleep } from '@waha/utils/promiseTimeout';
 import { Logger } from 'pino';
@@ -35,9 +36,14 @@ export class GowsEventStreamObservable extends Observable<EnginePayload> {
       client: grpc.Client;
       stream: grpc.ClientReadableStream<messages.EventJson>;
     },
+    lifecycle?: GowsEventStreamLifecycle,
   ) {
     super((subscriber) => {
-      logger.debug('Creating grpc client and stream...');
+      logger.info(
+        { event: 'gows.stream.connecting' },
+        'Creating gRPC event stream',
+      );
+      lifecycle?.connecting();
       logger.setBindings({ id: rand() });
       const { client, stream } = factory();
       this._client = client;
@@ -46,6 +52,16 @@ export class GowsEventStreamObservable extends Observable<EnginePayload> {
       let closed = false;
       let terminated = false;
       let tearingDown = false;
+      let ready = false;
+
+      function markReady() {
+        if (ready) {
+          return;
+        }
+        ready = true;
+        lifecycle?.ready();
+        logger.info({ event: 'gows.stream.ready' }, 'gRPC event stream ready');
+      }
 
       async function cleanup(reason: string) {
         if (closed) {
@@ -85,6 +101,7 @@ export class GowsEventStreamObservable extends Observable<EnginePayload> {
       }
 
       stream.on('data', (raw) => {
+        markReady();
         setImmediate(() => {
           const obj = raw.toObject();
           obj.data = JSON.parse(obj.data);
@@ -92,13 +109,25 @@ export class GowsEventStreamObservable extends Observable<EnginePayload> {
         });
       });
 
+      stream.on('metadata', () => {
+        markReady();
+      });
+
       stream.on('end', () => {
         if (tearingDown || terminated) {
           logger.debug('Stream ended');
           return;
         }
-        logger.error('Stream ended unexpectedly, reconnecting...');
-        terminate(new GowsStreamEndedError());
+        const error = new GowsStreamEndedError();
+        lifecycle?.interrupted(error);
+        logger.error(
+          {
+            event: 'gows.stream.interrupted',
+            reason: 'ended',
+          },
+          'gRPC event stream ended unexpectedly; reconnecting',
+        );
+        terminate(error);
       });
 
       stream.on('error', (err: any) => {
@@ -107,7 +136,16 @@ export class GowsEventStreamObservable extends Observable<EnginePayload> {
           logger.debug({ err: err }, 'Stream cancelled by client');
           return;
         }
-        logger.error(err, 'Stream error, reconnecting...');
+        lifecycle?.interrupted(err);
+        logger.error(
+          {
+            event: 'gows.stream.interrupted',
+            reason: 'error',
+            code: err?.code ?? null,
+            err: err,
+          },
+          'gRPC event stream error; reconnecting',
+        );
         terminate(err);
       });
 

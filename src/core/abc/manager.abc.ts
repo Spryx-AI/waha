@@ -12,6 +12,10 @@ import {
 } from '@waha/core/abc/EngineBootstrap';
 import { GowsEngineConfigService } from '@waha/core/config/GowsEngineConfigService';
 import { GowsBootstrap } from '@waha/core/engines/gows/GowsBootstrap';
+import {
+  GowsRuntimeContext,
+  GowsRuntimeState,
+} from '@waha/core/engines/gows/GowsRuntimeState';
 import { ISessionMeRepository } from '@waha/core/storage/ISessionMeRepository';
 import { ISessionWorkerRepository } from '@waha/core/storage/ISessionWorkerRepository';
 import { IgnoreJidConfig } from '@waha/core/utils/jids';
@@ -37,13 +41,13 @@ import { ISessionAuthRepository } from '../storage/ISessionAuthRepository';
 import { ISessionConfigRepository } from '../storage/ISessionConfigRepository';
 import { WhatsappSession } from './session.abc';
 import { IApiKeyRepository } from '@waha/core/storage/IApiKeyRepository';
+import { WebhookOutboxSnapshot } from '@waha/core/integrations/webhooks/WebhookOutbox';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
 const AsyncLock = require('async-lock');
 
 export abstract class SessionManager
-  implements BeforeApplicationShutdown, OnApplicationBootstrap
-{
+  implements BeforeApplicationShutdown, OnApplicationBootstrap {
   public store: any;
   public sessionAuthRepository: ISessionAuthRepository;
   public sessionConfigRepository: ISessionConfigRepository;
@@ -61,6 +65,7 @@ export abstract class SessionManager
     protected log: PinoLogger,
     protected config: WhatsappConfigService,
     protected gowsConfigService: GowsEngineConfigService,
+    protected gowsRuntime: GowsRuntimeState,
     protected readonly appsService: IAppsService,
   ) {
     this.lock = new AsyncLock({
@@ -95,6 +100,10 @@ export abstract class SessionManager
 
   public getSessionEvent(session: string, event: WAHAEvents): Observable<any> {
     return of();
+  }
+
+  public async getWebhookOutboxSnapshot(): Promise<WebhookOutboxSnapshot | null> {
+    return null;
   }
 
   public getSessionEvents(
@@ -145,6 +154,8 @@ export abstract class SessionManager
   abstract getSessionInfo(name: string): Promise<SessionDetailedInfo | null>;
 
   abstract getSessions(all: boolean): Promise<SessionInfo[]>;
+
+  abstract getRuntimeSessionsCount(): number;
 
   get workerId() {
     return this.config.workerId;
@@ -231,7 +242,13 @@ export abstract class SessionManager
     const logger = this.log.logger.child({ engine: engine.toLowerCase() });
     if (engine === WAHAEngine.GOWS) {
       const config = this.gowsConfigService.getBootstrapConfig();
-      return new GowsBootstrap(logger, config);
+      const context = (): GowsRuntimeContext => {
+        return {
+          workerId: this.workerId || null,
+          activeSessions: this.getRuntimeSessionsCount(),
+        };
+      };
+      return new GowsBootstrap(logger, config, this.gowsRuntime, context);
     }
     return new NoopEngineBootstrap();
   }

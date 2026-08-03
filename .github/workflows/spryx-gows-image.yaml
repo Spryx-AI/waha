@@ -1,0 +1,236 @@
+name: Spryx GOWS image
+
+on:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the verified multi-platform image to staging ECR
+        required: true
+        type: boolean
+        default: false
+      promote_production:
+        description: Promote an existing staging digest to production ECR
+        required: true
+        type: boolean
+        default: false
+      staging_digest:
+        description: Immutable staging manifest digest (sha256:...) to promote
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    name: Verify source changes
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version-file: .nvmrc
+          package-manager-cache: false
+
+      - name: Enable Corepack
+        run: corepack enable
+
+      - name: Install dependencies
+        run: yarn install --immutable
+
+      - name: Run credential-free compatibility gate
+        run: scripts/spryx-compatibility-gows.sh
+
+  verify:
+    name: Verify GOWS (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            platform: linux/amd64
+          - runner: ubuntu-24.04-arm
+            platform: linux/arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve immutable metadata
+        id: metadata
+        run: scripts/spryx-image-metadata.sh
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build the GOWS image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            USE_BROWSER=none
+            WHATSAPP_DEFAULT_ENGINE=GOWS
+            WAHA_BUILD_REVISION=${{ steps.metadata.outputs.revision }}
+            WAHA_BUILD_VERSION=${{ steps.metadata.outputs.version }}
+            WAHA_IMAGE_SOURCE=https://github.com/Spryx-AI/waha
+          load: true
+          push: false
+          tags: local/waha:${{ steps.metadata.outputs.tag }}
+
+      - name: Run credential-free smoke tests
+        run: scripts/spryx-smoke-gows.sh local/waha:${{ steps.metadata.outputs.tag }}
+
+  publish:
+    name: Publish immutable staging image
+    if: github.event_name == 'workflow_dispatch' && inputs.publish
+    needs:
+      - quality
+      - verify
+    runs-on: ubuntu-latest
+    environment: staging
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve immutable metadata
+        id: metadata
+        run: scripts/spryx-image-metadata.sh
+
+      - name: Configure AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.WAHA_ECR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to Amazon ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and publish the immutable image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            USE_BROWSER=none
+            WHATSAPP_DEFAULT_ENGINE=GOWS
+            WAHA_BUILD_REVISION=${{ steps.metadata.outputs.revision }}
+            WAHA_BUILD_VERSION=${{ steps.metadata.outputs.version }}
+            WAHA_IMAGE_SOURCE=https://github.com/Spryx-AI/waha
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ vars.WAHA_ECR_REPOSITORY }}:${{ steps.metadata.outputs.tag }}
+
+  promote-production:
+    name: Promote staging digest to production
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.promote_production
+    needs:
+      - quality
+      - verify
+    runs-on: ubuntu-latest
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Resolve immutable metadata
+        id: metadata
+        run: scripts/spryx-image-metadata.sh
+
+      - name: Validate promotion input
+        env:
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+          STAGING_REGISTRY: ${{ vars.WAHA_STAGING_ECR_REGISTRY }}
+          STAGING_REPOSITORY: ${{ vars.WAHA_STAGING_ECR_REPOSITORY }}
+        run: |
+          if ! printf '%s' "$STAGING_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "staging_digest must be an immutable sha256 manifest digest" >&2
+            exit 1
+          fi
+          if [ -z "$STAGING_REGISTRY" ] || [ -z "$STAGING_REPOSITORY" ]; then
+            echo "Production environment must define WAHA_STAGING_ECR_REGISTRY and WAHA_STAGING_ECR_REPOSITORY" >&2
+            exit 1
+          fi
+
+      - name: Configure production AWS credentials with GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.WAHA_ECR_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to production Amazon ECR
+        id: production-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to staging Amazon ECR
+        env:
+          AWS_REGION: ${{ vars.AWS_REGION }}
+          STAGING_REGISTRY: ${{ vars.WAHA_STAGING_ECR_REGISTRY }}
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" |
+            docker login --username AWS --password-stdin "$STAGING_REGISTRY"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Promote the exact verified manifest
+        env:
+          IMAGE_TAG: ${{ steps.metadata.outputs.tag }}
+          PRODUCTION_REGISTRY: ${{ steps.production-ecr.outputs.registry }}
+          PRODUCTION_REPOSITORY: ${{ vars.WAHA_ECR_REPOSITORY }}
+          STAGING_DIGEST: ${{ inputs.staging_digest }}
+          STAGING_REGISTRY: ${{ vars.WAHA_STAGING_ECR_REGISTRY }}
+          STAGING_REPOSITORY: ${{ vars.WAHA_STAGING_ECR_REPOSITORY }}
+        run: |
+          source_tag="${STAGING_REGISTRY}/${STAGING_REPOSITORY}:${IMAGE_TAG}"
+          source_digest="${STAGING_REGISTRY}/${STAGING_REPOSITORY}@${STAGING_DIGEST}"
+          target_tag="${PRODUCTION_REGISTRY}/${PRODUCTION_REPOSITORY}:${IMAGE_TAG}"
+
+          resolved_source="sha256:$(docker buildx imagetools inspect "$source_tag" --raw | sha256sum | cut -d ' ' -f 1)"
+          if [ "$resolved_source" != "$STAGING_DIGEST" ]; then
+            echo "Staging tag does not resolve to requested digest" >&2
+            echo "expected=$STAGING_DIGEST actual=$resolved_source" >&2
+            exit 1
+          fi
+
+          docker buildx imagetools create --tag "$target_tag" "$source_digest"
+
+          resolved_target="sha256:$(docker buildx imagetools inspect "$target_tag" --raw | sha256sum | cut -d ' ' -f 1)"
+          if [ "$resolved_target" != "$STAGING_DIGEST" ]; then
+            echo "Production manifest digest differs from staging" >&2
+            echo "expected=$STAGING_DIGEST actual=$resolved_target" >&2
+            exit 1
+          fi
+
+          {
+            echo "### Production promotion"
+            echo
+            echo "- Source: \`${source_digest}\`"
+            echo "- Target: \`${target_tag}@${resolved_target}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

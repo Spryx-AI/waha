@@ -1,0 +1,39 @@
+services:
+  waha:
+    image: ${WAHA_LOCAL_IMAGE:?Set WAHA_LOCAL_IMAGE to the locally built Spryx WAHA image}
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${WAHA_LOCAL_PORT:-3300}:3000"
+    environment:
+      WAHA_API_KEY: ${WAHA_LOCAL_API_KEY:-spryx-local-api-key}
+      WAHA_DASHBOARD_ENABLED: "True"
+      WAHA_DASHBOARD_USERNAME: ${WAHA_LOCAL_DASHBOARD_USERNAME:-admin}
+      WAHA_DASHBOARD_PASSWORD: ${WAHA_LOCAL_DASHBOARD_PASSWORD:-spryx-local-dashboard}
+      WHATSAPP_SWAGGER_ENABLED: "True"
+      WHATSAPP_SWAGGER_USERNAME: ${WAHA_LOCAL_DASHBOARD_USERNAME:-admin}
+      WHATSAPP_SWAGGER_PASSWORD: ${WAHA_LOCAL_DASHBOARD_PASSWORD:-spryx-local-dashboard}
+      WHATSAPP_DEFAULT_ENGINE: GOWS
+      WHATSAPP_START_SESSION: ${WAHA_LOCAL_SESSION:-spryx-local}
+      WHATSAPP_RESTART_ALL_SESSIONS: "True"
+      WAHA_NAMESPACE: all
+      WAHA_BASE_URL: http://127.0.0.1:${WAHA_LOCAL_PORT:-3300}
+      WAHA_LOG_FORMAT: PRETTY
+      WAHA_LOG_LEVEL: info
+      WAHA_PRINT_QR: "False"
+      WAHA_MEDIA_STORAGE: LOCAL
+      WHATSAPP_FILES_LIFETIME: "0"
+      WHATSAPP_FILES_FOLDER: /app/.media
+    volumes:
+      - ./.spryx-local/sessions:/app/.sessions
+      - ./.spryx-local/media:/app/.media
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl -fsS -H 'X-Api-Key: ${WAHA_LOCAL_API_KEY:-spryx-local-api-key}' http://127.0.0.1:3000/health/ready >/dev/null",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+      start_period: 10s

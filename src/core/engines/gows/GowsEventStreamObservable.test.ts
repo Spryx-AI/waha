@@ -3,6 +3,7 @@ import {
   GowsEventStreamObservable,
   GowsStreamEndedError,
 } from '@waha/core/engines/gows/GowsEventStreamObservable';
+import { GowsRuntimeState } from '@waha/core/engines/gows/GowsRuntimeState';
 import { EventEmitter } from 'events';
 import { merge, Subject } from 'rxjs';
 import { retry } from 'rxjs/operators';
@@ -130,12 +131,20 @@ describe('GowsEventStreamObservable', () => {
     const streams = [new FakeStream(), new FakeStream()];
     const clients = [new FakeClient(), new FakeClient()];
     let attempt = 0;
+    const runtime = new GowsRuntimeState();
 
-    const observable = new GowsEventStreamObservable(buildLogger(), () => {
-      const index = attempt;
-      attempt += 1;
-      return { client: clients[index] as any, stream: streams[index] as any };
-    });
+    const observable = new GowsEventStreamObservable(
+      buildLogger(),
+      () => {
+        const index = attempt;
+        attempt += 1;
+        return {
+          client: clients[index] as any,
+          stream: streams[index] as any,
+        };
+      },
+      runtime.eventStreamLifecycle('session-one'),
+    );
     observable.CLIENT_CLOSE_TIMEOUT = 0;
 
     const local$ = new Subject<any>();
@@ -161,6 +170,25 @@ describe('GowsEventStreamObservable', () => {
     expect(next.mock.calls[0][0]).toEqual({
       event: 'Message',
       data: { id: '1' },
+    });
+    expect(
+      runtime.snapshot({ workerId: 'worker-one', activeSessions: 1 }),
+    ).toMatchObject({
+      eventStreams: {
+        status: 'ready',
+        sessions: {
+          'session-one': {
+            status: 'ready',
+            attempts: 2,
+            reconnects: 1,
+            interruptions: 1,
+          },
+        },
+      },
+      counters: {
+        streamReconnects: 1,
+        streamInterruptions: 1,
+      },
     });
     subscription.unsubscribe();
   });

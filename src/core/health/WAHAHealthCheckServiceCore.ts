@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { HealthCheckResult, HealthCheckService } from '@nestjs/terminus';
 import type { HealthIndicatorFunction } from '@nestjs/terminus/dist/health-indicator';
 import { MediaLocalStorageConfig } from '@waha/core/media/local/MediaLocalStorageConfig';
+import { GowsRuntimeHealthIndicator } from '@waha/core/health/GowsRuntimeHealthIndicator';
 import * as path from 'path';
 
 import { WhatsappConfigService } from '../../config.service';
@@ -22,6 +23,7 @@ export class WAHAHealthCheckServiceCore extends WAHAHealthCheckService {
     protected config: WhatsappConfigService,
     protected mongoStoreHealthIndicator: MongoStoreHealthIndicator,
     protected checkFreeDiskSpaceIndicator: CheckFreeDiskSpaceIndicator,
+    protected gowsRuntimeHealthIndicator: GowsRuntimeHealthIndicator,
     protected mediaLocalStorageConfig: MediaLocalStorageConfig,
   ) {
     super(sessionManager, health, config);
@@ -30,6 +32,26 @@ export class WAHAHealthCheckServiceCore extends WAHAHealthCheckService {
   check(): Promise<HealthCheckResult> {
     const indicators = this.getIndicators();
     return this.health.check(indicators);
+  }
+
+  readiness(): Promise<HealthCheckResult> {
+    return this.health.check([
+      () =>
+        this.gowsRuntimeHealthIndicator.check('gows.runtime', {
+          workerId: this.sessionManager.workerId,
+          activeSessions: this.sessionManager.getRuntimeSessionsCount(),
+        }),
+      async () => {
+        const snapshot = await this.sessionManager.getWebhookOutboxSnapshot();
+        return {
+          'webhook.outbox': {
+            status: 'up',
+            enabled: snapshot != null,
+            ...(snapshot ?? {}),
+          },
+        };
+      },
+    ]);
   }
 
   getIndicators(): HealthIndicatorFunction[] {
