@@ -13,6 +13,7 @@ import { Logger } from 'pino';
 
 export interface WebhookOutboxOptions {
   workerId: string;
+  concurrency?: number;
   pollMilliseconds?: number;
   leaseMilliseconds?: number;
   maxAttempts?: number;
@@ -42,6 +43,7 @@ export class WebhookOutbox {
   private leaseMilliseconds: number;
   private maxAttempts: number;
   private maxRetryAgeMilliseconds: number;
+  private concurrency: number;
 
   constructor(
     private repository: WebhookOutboxRepository,
@@ -49,6 +51,7 @@ export class WebhookOutbox {
     private options: WebhookOutboxOptions,
   ) {
     this.logger = loggerBuilder.child({ name: WebhookOutbox.name });
+    this.concurrency = Math.max(1, options.concurrency ?? 8);
     this.pollMilliseconds = options.pollMilliseconds ?? 1_000;
     this.leaseMilliseconds = options.leaseMilliseconds ?? 60_000;
     this.maxAttempts = options.maxAttempts ?? 100;
@@ -129,14 +132,21 @@ export class WebhookOutbox {
     this.draining = true;
     try {
       while (!this.stopped) {
-        const record = await this.repository.claim(
-          this.options.workerId,
-          this.leaseMilliseconds,
-        );
-        if (!record) {
+        const records: WebhookOutboxRecord[] = [];
+        for (let index = 0; index < this.concurrency; index += 1) {
+          const record = await this.repository.claim(
+            this.options.workerId,
+            this.leaseMilliseconds,
+          );
+          if (!record) {
+            break;
+          }
+          records.push(record);
+        }
+        if (records.length === 0) {
           break;
         }
-        await this.deliver(record);
+        await Promise.all(records.map((record) => this.deliver(record)));
       }
     } catch (error) {
       this.logger.error(

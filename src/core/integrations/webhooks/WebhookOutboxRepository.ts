@@ -186,6 +186,9 @@ export class WebhookOutboxRepository {
       let query = transaction(WEBHOOK_OUTBOX_TABLE)
         .whereIn('status', ['pending', 'retry'])
         .where('next_attempt_at', '<=', now)
+        .orderByRaw("CASE WHEN event_type = ? THEN 0 ELSE 1 END", [
+          'session.status',
+        ])
         .orderBy('next_attempt_at', 'asc')
         .orderBy('event_timestamp_ms', 'asc');
       if (isPostgres(transaction)) {
