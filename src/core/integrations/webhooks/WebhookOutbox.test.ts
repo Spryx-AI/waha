@@ -77,6 +77,52 @@ describe('WebhookOutbox', () => {
     ).resolves.toBe(true);
   });
 
+  it('persists message and message.any envelopes without duplicating a retried envelope', async () => {
+    knex = connect();
+    await migrateWebhookOutbox(knex);
+    const target = buildWebhookTarget('global', 0, {
+      url: 'https://channel-events.example/waha',
+      events: [WAHAEvents.MESSAGE, WAHAEvents.MESSAGE_ANY],
+    });
+    const providerMessageId =
+      'false_5511999999999@c.us_PROVIDER_MESSAGE_ID';
+    const message = {
+      id: 'evt_01message00000000000000000',
+      timestamp: Date.now(),
+      session: 'quality-life',
+      event: WAHAEvents.MESSAGE,
+      payload: { id: providerMessageId, fromMe: false },
+    };
+    const messageAny = {
+      ...message,
+      id: 'evt_01messageany0000000000000',
+      event: WAHAEvents.MESSAGE_ANY,
+    };
+    const outbox = new WebhookOutbox(
+      new WebhookOutboxRepository(knex),
+      buildLogger(),
+      { workerId: 'worker' },
+    );
+
+    await outbox.enqueue(target, message);
+    await outbox.enqueue(target, messageAny);
+    await outbox.enqueue(target, message);
+
+    const rows = await knex(WEBHOOK_OUTBOX_TABLE)
+      .select('event_id', 'event_type', 'payload_json')
+      .orderBy('event_type');
+    expect(rows).toHaveLength(2);
+    expect(rows.map((row) => row.event_id)).toEqual(
+      expect.arrayContaining([message.id, messageAny.id]),
+    );
+    expect(
+      rows.map((row) => {
+        const payload = JSON.parse(row.payload_json);
+        return payload.payload.id;
+      }),
+    ).toEqual([providerMessageId, providerMessageId]);
+  });
+
   it('restores a pending event after restart and delivers the same identity once', async () => {
     knex = connect();
     await migrateWebhookOutbox(knex);
