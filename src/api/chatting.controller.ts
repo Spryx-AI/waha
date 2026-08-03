@@ -82,7 +82,12 @@ export class ChattingController {
       validateRequestMentions(request);
       request.mentions = await whatsapp.resolveMentionsAll(request.chatId);
     }
-    return whatsapp.sendText(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      () => whatsapp.sendText(request),
+    );
   }
 
   @Post('/sendImage')
@@ -98,7 +103,12 @@ export class ChattingController {
       validateRequestMentions(request);
       request.mentions = await whatsapp.resolveMentionsAll(request.chatId);
     }
-    return whatsapp.sendImage(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      () => whatsapp.sendImage(request),
+    );
   }
 
   @Post('/sendFile')
@@ -114,7 +124,12 @@ export class ChattingController {
       validateRequestMentions(request);
       request.mentions = await whatsapp.resolveMentionsAll(request.chatId);
     }
-    return whatsapp.sendFile(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      () => whatsapp.sendFile(request),
+    );
   }
 
   @Post('/sendVoice')
@@ -126,7 +141,12 @@ export class ChattingController {
   @CheckPolicies(CanSession(Action.Send, FromBody('session')))
   async sendVoice(@Body() request: MessageVoiceRequest) {
     const whatsapp = await this.manager.getWorkingSession(request.session);
-    return whatsapp.sendVoice(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      () => whatsapp.sendVoice(request),
+    );
   }
 
   @Post('/sendVideo')
@@ -142,7 +162,12 @@ export class ChattingController {
       validateRequestMentions(request);
       request.mentions = await whatsapp.resolveMentionsAll(request.chatId);
     }
-    return whatsapp.sendVideo(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      async () => whatsapp.sendVideo(request),
+    );
   }
 
   @Post('/send/link-custom-preview')
@@ -283,7 +308,12 @@ export class ChattingController {
   @CheckPolicies(CanSession(Action.Send, FromBody('session')))
   async sendContactVcard(@Body() request: MessageContactVcardRequest) {
     const whatsapp = await this.manager.getWorkingSession(request.session);
-    return whatsapp.sendContactVCard(request);
+    return this.manager.executeOutboundCommand(
+      request.session,
+      request.id,
+      request,
+      async () => whatsapp.sendContactVCard(request),
+    );
   }
 
   @Post('/send/buttons/reply')
