@@ -1,10 +1,12 @@
 import {
   Inject,
   Injectable,
+  ConflictException,
   NotFoundException,
   OnApplicationBootstrap,
   OnModuleInit,
 } from '@nestjs/common';
+import { createHash } from 'crypto';
 import {
   AppsService,
   IAppsService,
@@ -34,6 +36,10 @@ import {
   WebhookTarget,
 } from '@waha/core/integrations/webhooks/WebhookTarget';
 import { MediaManager } from '@waha/core/media/MediaManager';
+import {
+  migrateOutboundCommands,
+  OutboundCommandRepository,
+} from '@waha/core/outbound/OutboundCommandRepository';
 import { MediaStorageFactory } from '@waha/core/media/MediaStorageFactory';
 import { LocalSessionAuthRepository } from '@waha/core/storage/LocalSessionAuthRepository';
 import { LocalSessionConfigRepository } from '@waha/core/storage/LocalSessionConfigRepository';
@@ -97,6 +103,7 @@ export class SessionManagerCore extends SessionManager
   protected readonly EngineClass: typeof WhatsappSession;
   protected readonly engineBootstrap: EngineBootstrap;
   private webhookOutbox?: WebhookOutbox;
+  private outboundCommandRepository?: OutboundCommandRepository;
 
   protected events2: DefaultMap<
     string,
@@ -203,6 +210,7 @@ export class SessionManagerCore extends SessionManager
     await this.sessionWorkerRepository.init();
     await this.apiKeyRepository.init();
     await this.initializeWebhookOutbox();
+    await this.initializeOutboundCommands();
     this.listenEvents();
     await this.clearStorage();
   }
@@ -529,6 +537,65 @@ export class SessionManagerCore extends SessionManager
       { workerId: workerId },
       'Durable webhook outbox is enabled.',
     );
+  }
+
+  private async initializeOutboundCommands(): Promise<void> {
+    if (!this.config.outboundIdempotencyEnabled) {
+      this.log.info('Outbound command idempotency is disabled.');
+      return;
+    }
+    if (this.store instanceof MongoStore) {
+      throw new Error(
+        'WAHA_OUTBOUND_IDEMPOTENCY_ENABLED requires PostgreSQL or local SQLite storage.',
+      );
+    }
+    const knex = this.store.getWAHADatabase();
+    await migrateOutboundCommands(knex);
+    this.outboundCommandRepository = new OutboundCommandRepository(knex);
+    this.log.info('Durable outbound command idempotency is enabled.');
+  }
+
+  override async executeOutboundCommand<T>(
+    sessionName: string,
+    commandId: string | undefined,
+    request: unknown,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    const repository = this.outboundCommandRepository;
+    if (!repository || !commandId) {
+      return operation();
+    }
+
+    const requestSha256 = createHash('sha256')
+      .update(JSON.stringify(request))
+      .digest('hex');
+    const claim = await repository.claim(
+      sessionName,
+      commandId,
+      requestSha256,
+      5 * 60 * 1000,
+    );
+    if (claim.outcome === 'cached') {
+      return claim.response as T;
+    }
+    if (claim.outcome !== 'execute') {
+      const code = `outbound_command_${claim.outcome}`;
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: code,
+        code: code,
+      });
+    }
+
+    try {
+      const response = await operation();
+      await repository.succeed(sessionName, commandId, response);
+      return response;
+    } catch (error) {
+      await repository.markUncertain(sessionName, commandId);
+      throw error;
+    }
   }
 
   public async getWebhookOutboxSnapshot(): Promise<WebhookOutboxSnapshot | null> {

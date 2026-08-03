@@ -2,6 +2,7 @@ import {
   BeforeApplicationShutdown,
   NotFoundException,
   OnApplicationBootstrap,
+  ServiceUnavailableException,
   UnprocessableEntityException,
 } from '@nestjs/common';
 import { IAppsService } from '@waha/apps/app_sdk/services/IAppsService';
@@ -55,6 +56,15 @@ export abstract class SessionManager
   protected sessionWorkerRepository: ISessionWorkerRepository;
   public apiKeyRepository: IApiKeyRepository;
   private lock: any;
+
+  async executeOutboundCommand<T>(
+    _sessionName: string,
+    _commandId: string | undefined,
+    _request: unknown,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    return operation();
+  }
 
   WAIT_SESSION_RUNNING_INTERVAL = 500;
   WAIT_SESSION_RUNNING_TIMEOUT = 5_000;
@@ -208,7 +218,10 @@ export abstract class SessionManager
         status: 'STOPPED',
         expected: expected,
       };
-      throw new UnprocessableEntityException(msg);
+      throw new ServiceUnavailableException({
+        ...msg,
+        code: 'session_not_ready',
+      });
     }
 
     const session = this.getSession(sessionName);
@@ -225,7 +238,10 @@ export abstract class SessionManager
         status: session.status,
         expected: expected,
       };
-      throw new UnprocessableEntityException(msg);
+      throw new ServiceUnavailableException({
+        ...msg,
+        code: 'session_not_ready',
+      });
     }
     return session;
   }

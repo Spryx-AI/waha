@@ -2539,7 +2539,21 @@ export class WhatsappSessionGoWSCore extends WhatsappSession {
       session: this.session,
       id: key.id,
     });
-    const response = await promisify(this.client.GetMessageById)(request);
+    let response;
+    try {
+      response = await promisify(this.client.GetMessageById)(request);
+    } catch (error) {
+      const serviceError = error as grpc.ServiceError;
+      const details = String(serviceError?.details || serviceError?.message || '');
+      const missing =
+        serviceError?.code === grpc.status.NOT_FOUND ||
+        (serviceError?.code === grpc.status.UNKNOWN &&
+          details.toLowerCase().includes('not found'));
+      if (missing) {
+        return null;
+      }
+      throw error;
+    }
     const msg = parseJson(response);
     return this.processIncomingMessage(msg, query.downloadMedia);
   }

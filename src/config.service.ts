@@ -130,6 +130,12 @@ export class WhatsappConfigService implements OnApplicationBootstrap {
     );
   }
 
+  get outboundIdempotencyEnabled(): boolean {
+    return parseBool(
+      this.configService.get('WAHA_OUTBOUND_IDEMPOTENCY_ENABLED', 'false'),
+    );
+  }
+
   getSessionMongoUrl(): string | undefined {
     return this.configService.get('WHATSAPP_SESSIONS_MONGO_URL', undefined);
   }
