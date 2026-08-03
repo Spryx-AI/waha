@@ -1,4 +1,5 @@
 import { ReachoutTimelockTracker } from '@waha/core/abc/ReachoutTimelockTracker';
+import { stampEventMetadata } from '@waha/core/abc/event-metadata';
 import { getBrowserExecutablePath as getBrowserExecutablePathAutodetect } from '@waha/core/abc/session.browser';
 import { IMediaConverter } from '@waha/core/media/IConverter';
 import { Ffmpeg } from '@waha/core/utils/ffmpeg';
@@ -39,7 +40,6 @@ import { PaginationParams } from '@waha/structures/pagination.dto';
 import { MessageSource, WAMessage } from '@waha/structures/responses.dto';
 import { BrowserTraceQuery } from '@waha/structures/server.debug.dto';
 import { DefaultMap } from '@waha/utils/DefaultMap';
-import { generatePrefixedId } from '@waha/utils/ids';
 import { LoggerBuilder } from '@waha/utils/logging';
 import { complete } from '@waha/utils/reactive/complete';
 import { SwitchObservable } from '@waha/utils/reactive/SwitchObservable';
@@ -271,11 +271,7 @@ export abstract class WhatsappSession {
               throw err;
             }),
             filter(Boolean),
-            map((data) => {
-              data._eventId = generatePrefixedId('evt');
-              data._timestampMs = Date.now();
-              return data;
-            }),
+            map(stampEventMetadata),
             retry(),
             share(),
           );
