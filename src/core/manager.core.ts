@@ -530,11 +530,21 @@ export class SessionManagerCore extends SessionManager
     this.webhookOutbox = new WebhookOutbox(
       repository,
       this.log.logger,
-      { workerId: workerId },
+      {
+        workerId: workerId,
+        concurrency: this.config.webhookOutboxConcurrency,
+        retryConcurrency: this.config.webhookOutboxRetryConcurrency,
+        backgroundConcurrency: this.config.webhookOutboxBackgroundConcurrency,
+      },
     );
     this.webhookOutbox.start();
     this.log.info(
-      { workerId: workerId },
+      {
+        workerId: workerId,
+        liveConcurrency: this.config.webhookOutboxConcurrency,
+        retryConcurrency: this.config.webhookOutboxRetryConcurrency,
+        backgroundConcurrency: this.config.webhookOutboxBackgroundConcurrency,
+      },
       'Durable webhook outbox is enabled.',
     );
   }

@@ -14,6 +14,8 @@ import { Logger } from 'pino';
 export interface WebhookOutboxOptions {
   workerId: string;
   concurrency?: number;
+  retryConcurrency?: number;
+  backgroundConcurrency?: number;
   pollMilliseconds?: number;
   leaseMilliseconds?: number;
   maxAttempts?: number;
@@ -36,14 +38,20 @@ interface ClassifiedError {
 export class WebhookOutbox {
   private logger: Logger;
   private targets = new Map<string, WebhookSender>();
-  private timer: NodeJS.Timeout | null = null;
-  private draining = false;
+  private liveTimer: NodeJS.Timeout | null = null;
+  private backgroundTimer: NodeJS.Timeout | null = null;
+  private retryTimer: NodeJS.Timeout | null = null;
+  private drainingLive = false;
+  private drainingBackground = false;
+  private drainingRetries = false;
   private stopped = true;
   private pollMilliseconds: number;
   private leaseMilliseconds: number;
   private maxAttempts: number;
   private maxRetryAgeMilliseconds: number;
-  private concurrency: number;
+  private liveConcurrency: number;
+  private retryConcurrency: number;
+  private backgroundConcurrency: number;
 
   constructor(
     private repository: WebhookOutboxRepository,
@@ -51,7 +59,12 @@ export class WebhookOutbox {
     private options: WebhookOutboxOptions,
   ) {
     this.logger = loggerBuilder.child({ name: WebhookOutbox.name });
-    this.concurrency = Math.max(1, options.concurrency ?? 8);
+    this.liveConcurrency = Math.max(1, options.concurrency ?? 8);
+    this.retryConcurrency = Math.max(1, options.retryConcurrency ?? 2);
+    this.backgroundConcurrency = Math.max(
+      1,
+      options.backgroundConcurrency ?? 1,
+    );
     this.pollMilliseconds = options.pollMilliseconds ?? 1_000;
     this.leaseMilliseconds = options.leaseMilliseconds ?? 60_000;
     this.maxAttempts = options.maxAttempts ?? 100;
@@ -64,20 +77,32 @@ export class WebhookOutbox {
       return;
     }
     this.stopped = false;
-    this.schedule(0);
+    this.scheduleLive(0);
+    this.scheduleBackground(0);
+    this.scheduleRetries(0);
   }
 
   stop(): void {
     this.stopped = true;
-    if (this.timer) {
-      clearTimeout(this.timer);
-      this.timer = null;
+    if (this.liveTimer) {
+      clearTimeout(this.liveTimer);
+      this.liveTimer = null;
+    }
+    if (this.backgroundTimer) {
+      clearTimeout(this.backgroundTimer);
+      this.backgroundTimer = null;
+    }
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
     }
   }
 
   register(target: WebhookTarget, sender: WebhookSender): void {
     this.targets.set(target.key, sender);
-    this.schedule(0);
+    this.scheduleLive(0);
+    this.scheduleBackground(0);
+    this.scheduleRetries(0);
   }
 
   async enqueue(target: WebhookTarget, webhook: any): Promise<void> {
@@ -90,7 +115,10 @@ export class WebhookOutbox {
       eventTimestampMs: webhook.timestamp,
       targetConfig: target.config,
       payload: webhook,
-      payloadSha256: crypto.createHash('sha256').update(body).digest('hex'),
+      payloadSha256: crypto
+        .createHash('sha256')
+        .update(body)
+        .digest('hex'),
     });
     this.logger.info(
       {
@@ -103,7 +131,8 @@ export class WebhookOutbox {
       },
       'Webhook persisted before delivery',
     );
-    this.schedule(0);
+    this.scheduleLive(0);
+    this.scheduleBackground(0);
   }
 
   async snapshot(): Promise<WebhookOutboxSnapshot> {
@@ -114,48 +143,115 @@ export class WebhookOutbox {
     };
   }
 
-  private schedule(delay: number): void {
-    if (this.stopped || this.timer) {
+  private scheduleLive(delay: number): void {
+    if (this.stopped || this.liveTimer) {
       return;
     }
-    this.timer = setTimeout(() => {
-      this.timer = null;
-      void this.drain();
+    this.liveTimer = setTimeout(() => {
+      this.liveTimer = null;
+      void this.drainLive();
     }, delay);
-    this.timer.unref();
+    this.liveTimer.unref();
   }
 
-  private async drain(): Promise<void> {
-    if (this.stopped || this.draining) {
+  private scheduleBackground(delay: number): void {
+    if (this.stopped || this.backgroundTimer) {
       return;
     }
-    this.draining = true;
+    this.backgroundTimer = setTimeout(() => {
+      this.backgroundTimer = null;
+      void this.drainBackground();
+    }, delay);
+    this.backgroundTimer.unref();
+  }
+
+  private scheduleRetries(delay: number): void {
+    if (this.stopped || this.retryTimer) {
+      return;
+    }
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.drainRetries();
+    }, delay);
+    this.retryTimer.unref();
+  }
+
+  private async drainLive(): Promise<void> {
+    if (this.stopped || this.drainingLive) {
+      return;
+    }
+    this.drainingLive = true;
     try {
-      while (!this.stopped) {
-        const records: WebhookOutboxRecord[] = [];
-        for (let index = 0; index < this.concurrency; index += 1) {
-          const record = await this.repository.claim(
-            this.options.workerId,
-            this.leaseMilliseconds,
-          );
-          if (!record) {
-            break;
-          }
-          records.push(record);
-        }
-        if (records.length === 0) {
-          break;
-        }
-        await Promise.all(records.map((record) => this.deliver(record)));
-      }
+      await this.drainLane('live', this.liveConcurrency);
     } catch (error) {
       this.logger.error(
-        { event: 'webhook.outbox.dispatcher_error', err: error },
-        'Webhook outbox dispatcher failed',
+        { event: 'webhook.outbox.live_dispatcher_error', err: error },
+        'Live webhook outbox dispatcher failed',
       );
     } finally {
-      this.draining = false;
-      this.schedule(this.pollMilliseconds);
+      this.drainingLive = false;
+      this.scheduleLive(this.pollMilliseconds);
+    }
+  }
+
+  private async drainBackground(): Promise<void> {
+    if (this.stopped || this.drainingBackground) {
+      return;
+    }
+    this.drainingBackground = true;
+    try {
+      await this.drainLane('background', this.backgroundConcurrency);
+    } catch (error) {
+      this.logger.error(
+        { event: 'webhook.outbox.background_dispatcher_error', err: error },
+        'Background webhook outbox dispatcher failed',
+      );
+    } finally {
+      this.drainingBackground = false;
+      this.scheduleBackground(this.pollMilliseconds);
+    }
+  }
+
+  private async drainRetries(): Promise<void> {
+    if (this.stopped || this.drainingRetries) {
+      return;
+    }
+    this.drainingRetries = true;
+    try {
+      await this.repository.recoverExpiredLeases();
+      await this.drainLane('retry', this.retryConcurrency);
+    } catch (error) {
+      this.logger.error(
+        { event: 'webhook.outbox.retry_dispatcher_error', err: error },
+        'Retry webhook outbox dispatcher failed',
+      );
+    } finally {
+      this.drainingRetries = false;
+      this.scheduleRetries(this.pollMilliseconds);
+    }
+  }
+
+  private async drainLane(
+    lane: 'live' | 'background' | 'retry',
+    concurrency: number,
+  ): Promise<void> {
+    while (!this.stopped) {
+      const records: WebhookOutboxRecord[] = [];
+      for (let index = 0; index < concurrency; index += 1) {
+        const record = await this.repository.claim(
+          this.options.workerId,
+          this.leaseMilliseconds,
+          { lane: lane },
+        );
+        if (!record) {
+          break;
+        }
+        records.push(record);
+      }
+      if (records.length === 0) {
+        return;
+      }
+      await Promise.all(records.map((record) => this.deliver(record)));
     }
   }
 
@@ -163,17 +259,13 @@ export class WebhookOutbox {
     const startedAt = new Date();
     const sender = this.resolveSender(record);
     if (!sender) {
-      await this.fail(
-        record,
-        startedAt,
-        {
-          retryable: true,
-          errorClass: 'target',
-          errorCode: 'target_not_registered',
-          httpStatus: null,
-          requestId: null,
-        },
-      );
+      await this.fail(record, startedAt, {
+        retryable: true,
+        errorClass: 'target',
+        errorCode: 'target_not_registered',
+        httpStatus: null,
+        requestId: null,
+      });
       return;
     }
 
@@ -329,10 +421,7 @@ export class WebhookOutbox {
     if (status != null) {
       return {
         retryable:
-          status === 408 ||
-          status === 425 ||
-          status === 429 ||
-          status >= 500,
+          status === 408 || status === 425 || status === 429 || status >= 500,
         errorClass: 'http',
         errorCode: `http_${status}`,
         httpStatus: status,
