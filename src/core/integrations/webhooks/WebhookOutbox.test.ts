@@ -84,14 +84,18 @@ describe('WebhookOutbox', () => {
       url: 'https://channel-events.example/waha',
       events: [WAHAEvents.MESSAGE, WAHAEvents.MESSAGE_ANY],
     });
-    const providerMessageId =
-      'false_5511999999999@c.us_PROVIDER_MESSAGE_ID';
+    const providerMessageId = 'false_5511999999999@c.us_PROVIDER_MESSAGE_ID';
     const message = {
       id: 'evt_01message00000000000000000',
       timestamp: Date.now(),
       session: 'quality-life',
       event: WAHAEvents.MESSAGE,
-      payload: { id: providerMessageId, fromMe: false },
+      payload: {
+        id: providerMessageId,
+        from: '5511999999999@c.us',
+        fromMe: false,
+        to: '5511888888888@c.us',
+      },
     };
     const messageAny = {
       ...message,
@@ -123,7 +127,7 @@ describe('WebhookOutbox', () => {
     ).toEqual([providerMessageId, providerMessageId]);
   });
 
-  it('claims session status before an older message backlog', async () => {
+  it('claims a new message before an older session status', async () => {
     knex = connect();
     await migrateWebhookOutbox(knex);
     const target = buildWebhookTarget('session', 0, {
@@ -131,7 +135,11 @@ describe('WebhookOutbox', () => {
       events: [WAHAEvents.MESSAGE_ANY, WAHAEvents.SESSION_STATUS],
     });
     const repository = new WebhookOutboxRepository(knex);
-    const enqueue = (eventId: string, eventType: WAHAEvents, timestamp: number) =>
+    const enqueue = (
+      eventId: string,
+      eventType: WAHAEvents,
+      timestamp: number,
+    ) =>
       repository.enqueue({
         eventId,
         targetKey: target.key,
@@ -149,15 +157,237 @@ describe('WebhookOutbox', () => {
         payloadSha256: `${eventId}-sha`,
       });
 
-    await enqueue('evt_older_message', WAHAEvents.MESSAGE_ANY, 1_000);
-    await enqueue('evt_current_status', WAHAEvents.SESSION_STATUS, 2_000);
+    await enqueue('evt_older_status', WAHAEvents.SESSION_STATUS, 1_000);
+    await enqueue('evt_new_message', WAHAEvents.MESSAGE_ANY, 2_000);
 
-    const claimed = await repository.claim('worker', 60_000);
+    const claimed = await repository.claim('worker', 60_000, {
+      lane: 'live',
+    });
 
     expect(claimed).toMatchObject({
-      event_id: 'evt_current_status',
-      event_type: WAHAEvents.SESSION_STATUS,
+      event_id: 'evt_new_message',
+      event_type: WAHAEvents.MESSAGE_ANY,
     });
+  });
+
+  it('isolates status retries from the live message lane', async () => {
+    knex = connect();
+    await migrateWebhookOutbox(knex);
+    const target = buildWebhookTarget('session', 0, {
+      url: 'https://channel-events.example/waha',
+      events: [WAHAEvents.MESSAGE, WAHAEvents.SESSION_STATUS],
+    });
+    const repository = new WebhookOutboxRepository(knex);
+    const enqueue = (
+      eventId: string,
+      eventType: WAHAEvents,
+      timestamp: number,
+    ) =>
+      repository.enqueue({
+        eventId: eventId,
+        targetKey: target.key,
+        sessionName: 'quality-life',
+        eventType: eventType,
+        eventTimestampMs: timestamp,
+        targetConfig: target.config,
+        payload: {
+          id: eventId,
+          timestamp: timestamp,
+          session: 'quality-life',
+          event: eventType,
+          payload: {},
+        },
+        payloadSha256: `${eventId}-sha`,
+      });
+
+    await enqueue('evt_status_retry', WAHAEvents.SESSION_STATUS, 1_000);
+    await knex(WEBHOOK_OUTBOX_TABLE)
+      .where({ event_id: 'evt_status_retry' })
+      .update({ status: 'retry' });
+    await enqueue('evt_fresh_message', WAHAEvents.MESSAGE, 2_000);
+
+    const fresh = await repository.claim('worker', 60_000, {
+      lane: 'live',
+    });
+
+    expect(fresh).toMatchObject({
+      event_id: 'evt_fresh_message',
+      event_type: WAHAEvents.MESSAGE,
+    });
+  });
+
+  it('keeps FIFO fairness between event types in the live lane', async () => {
+    knex = connect();
+    await migrateWebhookOutbox(knex);
+    const target = buildWebhookTarget('session', 0, {
+      url: 'https://channel-events.example/waha',
+      events: [WAHAEvents.MESSAGE, WAHAEvents.MESSAGE_REACTION],
+    });
+    const repository = new WebhookOutboxRepository(knex);
+    const enqueue = (
+      eventId: string,
+      eventType: WAHAEvents,
+      timestamp: number,
+    ) =>
+      repository.enqueue({
+        eventId: eventId,
+        targetKey: target.key,
+        sessionName: 'quality-life',
+        eventType: eventType,
+        eventTimestampMs: timestamp,
+        targetConfig: target.config,
+        payload: {},
+        payloadSha256: `${eventId}-sha`,
+      });
+
+    await enqueue('evt_older_reaction', WAHAEvents.MESSAGE_REACTION, 1_000);
+    await enqueue('evt_new_message', WAHAEvents.MESSAGE, 2_000);
+
+    const claimed = await repository.claim('worker', 60_000, { lane: 'live' });
+
+    expect(claimed).toMatchObject({
+      event_id: 'evt_older_reaction',
+      event_type: WAHAEvents.MESSAGE_REACTION,
+    });
+  });
+
+  it('delivers a fresh message while a status retry is blocked', async () => {
+    knex = connect();
+    await migrateWebhookOutbox(knex);
+    const target = buildWebhookTarget('session', 0, {
+      url: 'https://channel-events.example/waha',
+      events: [WAHAEvents.MESSAGE, WAHAEvents.SESSION_STATUS],
+    });
+    let releaseRetry: () => void = () => undefined;
+    const retryBlocked = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const deliveredEvents: string[] = [];
+    const sender = {
+      sendOnce: jest.fn().mockImplementation(async (webhook) => {
+        deliveredEvents.push(webhook.event);
+        if (webhook.event === WAHAEvents.SESSION_STATUS) {
+          await retryBlocked;
+        }
+        return { status: 202, requestId: null };
+      }),
+    };
+    const repository = new WebhookOutboxRepository(knex);
+    const outbox = new WebhookOutbox(repository, buildLogger(), {
+      workerId: 'worker',
+      concurrency: 2,
+      retryConcurrency: 1,
+      pollMilliseconds: 5,
+    });
+    outbox.register(target, sender as any);
+    await outbox.enqueue(target, {
+      id: 'evt_status_retry',
+      timestamp: 1_000,
+      session: 'quality-life',
+      event: WAHAEvents.SESSION_STATUS,
+      payload: {},
+    });
+    await knex(WEBHOOK_OUTBOX_TABLE)
+      .where({ event_id: 'evt_status_retry' })
+      .update({ status: 'retry' });
+
+    outbox.start();
+    await eventually(async () =>
+      deliveredEvents.includes(WAHAEvents.SESSION_STATUS),
+    );
+    await outbox.enqueue(target, {
+      id: 'evt_fresh_message',
+      timestamp: 2_000,
+      session: 'quality-life',
+      event: WAHAEvents.MESSAGE,
+      payload: {},
+    });
+
+    await eventually(async () => deliveredEvents.includes(WAHAEvents.MESSAGE));
+    expect(deliveredEvents).toEqual([
+      WAHAEvents.SESSION_STATUS,
+      WAHAEvents.MESSAGE,
+    ]);
+
+    releaseRetry();
+    await eventually(async () => {
+      const delivered = await knex(WEBHOOK_OUTBOX_TABLE)
+        .where({ status: 'delivered' })
+        .count({ count: '*' })
+        .first();
+      return Number(delivered?.count) === 2;
+    });
+    outbox.stop();
+  });
+
+  it('delivers a live message while a presence delivery is blocked', async () => {
+    knex = connect();
+    await migrateWebhookOutbox(knex);
+    const target = buildWebhookTarget('session', 0, {
+      url: 'https://channel-events.example/waha',
+      events: [WAHAEvents.MESSAGE, WAHAEvents.PRESENCE_UPDATE],
+    });
+    let releasePresence: () => void = () => undefined;
+    const presenceBlocked = new Promise<void>((resolve) => {
+      releasePresence = resolve;
+    });
+    const deliveredEvents: string[] = [];
+    const sender = {
+      sendOnce: jest.fn().mockImplementation(async (webhook) => {
+        deliveredEvents.push(webhook.event);
+        if (webhook.event === WAHAEvents.PRESENCE_UPDATE) {
+          await presenceBlocked;
+        }
+        return { status: 202, requestId: null };
+      }),
+    };
+    const outbox = new WebhookOutbox(
+      new WebhookOutboxRepository(knex),
+      buildLogger(),
+      {
+        workerId: 'worker',
+        concurrency: 3,
+        retryConcurrency: 1,
+        backgroundConcurrency: 1,
+        pollMilliseconds: 5,
+      },
+    );
+    outbox.register(target, sender as any);
+    await outbox.enqueue(target, {
+      id: 'evt_presence',
+      timestamp: 1_000,
+      session: 'quality-life',
+      event: WAHAEvents.PRESENCE_UPDATE,
+      payload: { chatId: 'joao@c.us' },
+    });
+
+    outbox.start();
+    await eventually(async () =>
+      deliveredEvents.includes(WAHAEvents.PRESENCE_UPDATE),
+    );
+    await outbox.enqueue(target, {
+      id: 'evt_live_message',
+      timestamp: 2_000,
+      session: 'quality-life',
+      event: WAHAEvents.MESSAGE,
+      payload: { from: 'maria@c.us', fromMe: false, to: 'me@c.us' },
+    });
+
+    await eventually(async () => deliveredEvents.includes(WAHAEvents.MESSAGE));
+    expect(deliveredEvents).toEqual([
+      WAHAEvents.PRESENCE_UPDATE,
+      WAHAEvents.MESSAGE,
+    ]);
+
+    releasePresence();
+    await eventually(async () => {
+      const delivered = await knex(WEBHOOK_OUTBOX_TABLE)
+        .where({ status: 'delivered' })
+        .count({ count: '*' })
+        .first();
+      return Number(delivered?.count) === 2;
+    });
+    outbox.stop();
   });
 
   it('delivers independent events concurrently', async () => {
@@ -180,7 +410,12 @@ describe('WebhookOutbox', () => {
     const outbox = new WebhookOutbox(
       new WebhookOutboxRepository(knex),
       buildLogger(),
-      { workerId: 'worker', concurrency: 2, pollMilliseconds: 5 },
+      {
+        workerId: 'worker',
+        concurrency: 2,
+        retryConcurrency: 1,
+        pollMilliseconds: 5,
+      },
     );
     outbox.register(target, sender as any);
     await outbox.enqueue(target, {
@@ -188,14 +423,14 @@ describe('WebhookOutbox', () => {
       timestamp: 1_000,
       session: 'quality-life',
       event: WAHAEvents.MESSAGE_ANY,
-      payload: {},
+      payload: { from: 'joao@c.us', fromMe: false, to: 'me@c.us' },
     });
     await outbox.enqueue(target, {
       id: 'evt_concurrent_two',
       timestamp: 2_000,
       session: 'quality-life',
       event: WAHAEvents.MESSAGE_ANY,
-      payload: {},
+      payload: { from: 'maria@c.us', fromMe: false, to: 'me@c.us' },
     });
 
     outbox.start();

@@ -130,6 +130,30 @@ export class WhatsappConfigService implements OnApplicationBootstrap {
     );
   }
 
+  get webhookOutboxConcurrency(): number {
+    const value = Number.parseInt(
+      this.configService.get('WAHA_WEBHOOK_OUTBOX_CONCURRENCY', '8'),
+      10,
+    );
+    return Number.isFinite(value) ? Math.max(1, value) : 8;
+  }
+
+  get webhookOutboxRetryConcurrency(): number {
+    const value = Number.parseInt(
+      this.configService.get('WAHA_WEBHOOK_OUTBOX_RETRY_CONCURRENCY', '2'),
+      10,
+    );
+    return Number.isFinite(value) ? Math.max(1, value) : 2;
+  }
+
+  get webhookOutboxBackgroundConcurrency(): number {
+    const value = Number.parseInt(
+      this.configService.get('WAHA_WEBHOOK_OUTBOX_BACKGROUND_CONCURRENCY', '1'),
+      10,
+    );
+    return Number.isFinite(value) ? Math.max(1, value) : 1;
+  }
+
   get outboundIdempotencyEnabled(): boolean {
     return parseBool(
       this.configService.get('WAHA_OUTBOUND_IDEMPOTENCY_ENABLED', 'false'),

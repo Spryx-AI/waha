@@ -42,6 +42,21 @@ export interface WebhookAttempt {
   errorCode?: string | null;
 }
 
+export type WebhookClaimLane = 'live' | 'background' | 'retry';
+
+const LIVE_EVENT_TYPES = [
+  'message',
+  'message.any',
+  'message.reaction',
+  'message.revoked',
+  'message.edited',
+  'message.waiting',
+];
+
+export interface WebhookClaimOptions {
+  lane?: WebhookClaimLane;
+}
+
 function isPostgres(knex: Knex): boolean {
   return String(knex.client.config.client).includes('pg');
 }
@@ -58,7 +73,10 @@ async function createSchema(knex: Knex): Promise<void> {
       table.json('payload_json').nullable();
       table.string('payload_sha256', 64).notNullable();
       table.string('status', 16).notNullable();
-      table.integer('attempt_count').notNullable().defaultTo(0);
+      table
+        .integer('attempt_count')
+        .notNullable()
+        .defaultTo(0);
       table.timestamp('next_attempt_at').notNullable();
       table.string('lease_owner', 128).nullable();
       table.timestamp('lease_expires_at').nullable();
@@ -73,10 +91,7 @@ async function createSchema(knex: Knex): Promise<void> {
       table.timestamp('updated_at').notNullable();
       table.primary(['event_id', 'target_key']);
       table.index(['status', 'next_attempt_at'], 'waha_webhook_outbox_due');
-      table.index(
-        ['status', 'lease_expires_at'],
-        'waha_webhook_outbox_lease',
-      );
+      table.index(['status', 'lease_expires_at'], 'waha_webhook_outbox_lease');
       table.index(
         ['session_name', 'event_timestamp_ms'],
         'waha_webhook_outbox_session',
@@ -87,10 +102,7 @@ async function createSchema(knex: Knex): Promise<void> {
   }
 
   if (
-    !(await knex.schema.hasColumn(
-      WEBHOOK_OUTBOX_TABLE,
-      'target_config_json',
-    ))
+    !(await knex.schema.hasColumn(WEBHOOK_OUTBOX_TABLE, 'target_config_json'))
   ) {
     await knex.schema.alterTable(WEBHOOK_OUTBOX_TABLE, (table) => {
       table.json('target_config_json').nullable();
@@ -167,30 +179,24 @@ export class WebhookOutboxRepository {
   async claim(
     workerId: string,
     leaseMilliseconds: number,
+    options: WebhookClaimOptions = {},
   ): Promise<WebhookOutboxRecord | null> {
     return this.knex.transaction(async (transaction) => {
       const now = new Date();
-      await transaction(WEBHOOK_OUTBOX_TABLE)
-        .where({ status: 'delivering' })
-        .where('lease_expires_at', '<=', now)
-        .update({
-          status: 'retry',
-          lease_owner: null,
-          lease_expires_at: null,
-          next_attempt_at: now,
-          last_error_class: 'lease_expired',
-          last_error_code: 'worker_abandoned',
-          updated_at: now,
-        });
-
+      const lane = options.lane ?? 'live';
+      const statuses = lane === 'retry' ? ['retry'] : ['pending'];
       let query = transaction(WEBHOOK_OUTBOX_TABLE)
-        .whereIn('status', ['pending', 'retry'])
+        .whereIn('status', statuses)
         .where('next_attempt_at', '<=', now)
-        .orderByRaw("CASE WHEN event_type = ? THEN 0 ELSE 1 END", [
-          'session.status',
-        ])
         .orderBy('next_attempt_at', 'asc')
-        .orderBy('event_timestamp_ms', 'asc');
+        .orderBy('event_timestamp_ms', 'asc')
+        .orderBy('event_id', 'asc')
+        .orderBy('target_key', 'asc');
+      if (lane === 'live') {
+        query = query.whereIn('event_type', LIVE_EVENT_TYPES);
+      } else if (lane === 'background') {
+        query = query.whereNotIn('event_type', LIVE_EVENT_TYPES);
+      }
       if (isPostgres(transaction)) {
         query = query.forUpdate().skipLocked();
       }
@@ -223,6 +229,22 @@ export class WebhookOutboxRepository {
         lease_expires_at: leaseExpiresAt,
       } as WebhookOutboxRecord;
     });
+  }
+
+  async recoverExpiredLeases(): Promise<number> {
+    const now = new Date();
+    return this.knex(WEBHOOK_OUTBOX_TABLE)
+      .where({ status: 'delivering' })
+      .where('lease_expires_at', '<=', now)
+      .update({
+        status: 'retry',
+        lease_owner: null,
+        lease_expires_at: null,
+        next_attempt_at: now,
+        last_error_class: 'lease_expired',
+        last_error_code: 'worker_abandoned',
+        updated_at: now,
+      });
   }
 
   async delivered(
