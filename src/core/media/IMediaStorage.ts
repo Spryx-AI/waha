@@ -14,6 +14,7 @@ interface Message {
 interface File {
   extension: string;
   filename?: string;
+  mimetype: string;
 }
 
 export interface MediaData {
@@ -51,6 +52,7 @@ export function getMetadata(data: MediaData): any {
     'waha-chat-id': data.message.chatId,
     'waha-message-id': data.message.id,
     'waha-media-filename': data.file.filename,
+    'waha-media-mimetype': data.file.mimetype,
     'waha-created-at': now.getTime(),
   };
 }
