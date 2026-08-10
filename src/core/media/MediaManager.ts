@@ -62,7 +62,13 @@ export class MediaManager implements IMediaManager {
       return null;
     }
 
-    let extension = mime.extension(mimetype);
+    let extension =
+      mimetype
+        .split(';', 1)[0]
+        .trim()
+        .toLowerCase() === 'video/quicktime'
+        ? 'mov'
+        : mime.extension(mimetype);
     if (mimetype == 'application/was' && !extension) {
       extension = 'zip';
     }
@@ -75,6 +81,7 @@ export class MediaManager implements IMediaManager {
       file: {
         extension: extension,
         filename: filename,
+        mimetype: mimetype,
       },
     };
 
