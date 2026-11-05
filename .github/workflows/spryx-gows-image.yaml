@@ -25,7 +25,7 @@ permissions:
 jobs:
   quality:
     name: Verify source changes
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -53,7 +53,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             platform: linux/amd64
             arch: amd64
           - runner: ubuntu-24.04-arm
@@ -107,7 +107,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: ubuntu-latest
+          - runner: ubuntu-24.04
             platform: linux/amd64
             arch: amd64
           - runner: ubuntu-24.04-arm
@@ -174,7 +174,7 @@ jobs:
     needs:
       - quality
       - build-publish-platform
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: staging
     permissions:
       contents: read
@@ -229,7 +229,7 @@ jobs:
     needs:
       - quality
       - verify
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     environment: production
     permissions:
       contents: read
